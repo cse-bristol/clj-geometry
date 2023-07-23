@@ -1,3 +1,19 @@
 {:deps {org.locationtech.jts/jts-core {:mvn/version "1.19.0"}
-        com.github.davidmoten/rtree2 {:mvn/version "0.9-RC1"}}}
+        com.github.davidmoten/rtree2 {:mvn/version "0.9-RC1"}
 
+        org.geotools/gt-geotiff          {:mvn/version "26.1"
+                                          :exclusions [org.locationtech.jts/jts-core]}
+        org.geotools/gt-referencing      {:mvn/version "26.1"
+                                          :exclusions [org.locationtech.jts/jts-core]}
+        org.geotools/gt-epsg-hsql        {:mvn/version "26.1"
+                                          :exclusions [org.locationtech.jts/jts-core]}
+        org.geotools/gt-process-raster   {:mvn/version "26.1"
+                                          :exclusions [org.locationtech.jts/jts-core]}
+        org.geotools/gt-process-feature  {:mvn/version "26.1"
+                                          :exclusions [org.locationtech.jts/jts-core]}
+        org.geotools/gt-geojson          {:mvn/version "26.1"
+                                          :exclusions [org.locationtech.jts/jts-core]}
+        org.geotools/gt-geopkg           {:mvn/version "26.1"
+                                          :exclusions [org.locationtech.jts/jts-core]}
+        org.geotools/gt-geojsondatastore {:mvn/version "26.1"
+                                          :exclusions [org.locationtech.jts/jts-core]}}}

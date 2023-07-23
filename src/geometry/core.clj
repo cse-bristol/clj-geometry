@@ -70,14 +70,51 @@
 
 (extend-type Geometry HasGeometry
              (geometry [g] g)
-             (replace-geometry [_ g] g))
+             (update-geometry [_ g] g))
 
 (extend-type String HasGeometry
              (geometry [s] (read-wkt s))
-             (replace-geometry [_ g] g))
+             (update-geometry [_ g] g))
 
 ;; functions to make geometries
 (defn coordinate? [x] (instance? Coordinate x))
+;; functions to see what things are
+(defn geometry-type [g]
+  (let [t (.getGeometryType (geometry g))]
+    (case t
+      "Point"              :point 
+      "MultiPoint"         :multi-point
+      "Polygon"            :polygon
+      "MultiPolygon"       :multi-polygon
+      "LineString"         :line-string
+      "MultiLineString"    :multi-line-string
+      "GeometryCollection" :geometry-collection
+      :unknown)))
+
+;; TODO should these call geometry? since that is a question about a thing
+;; that has a geometry, rather than a geometry.
+(defn point? [g] (and (satisfies? HasGeometry g)
+                      (= "Point" (.getGeometryType (geometry g)))))
+(defn line-string? [g] (and (satisfies? HasGeometry g)
+                            (= "LineString" (.getGeometryType (geometry g)))))
+(defn polygon? [g] (and (satisfies? HasGeometry g)
+                        (= "Polygon" (.getGeometryType (geometry g)))))
+(defn multi-point? [g] (and (satisfies? HasGeometry g)
+                            (= "MultiPoint" (.getGeometryType (geometry g)))))
+(defn multi-line-string? [g] (and (satisfies? HasGeometry g)
+                                  (= "MultiLineString" (.getGeometryType (geometry g)))))
+(defn multi-polygon? [g] (and (satisfies? HasGeometry g)
+                              (= "MultiPolygon" (.getGeometryType (geometry g)))))
+(defn collection? [g] (and (satisfies? HasGeometry g)
+                           (= "GeometryCollection" (.getGeometryType (geometry g)))))
+(defn single?
+  "Is the geometry of g either a point, polygon or linestring?"
+  [g]
+  (and (satisfies? HasGeometry g)
+       (let [t (.getGeometryType (geometry g))]
+         (or (= t "Point")
+             (= t "Polygon")
+             (= t "LineString")))))
 
 (defn make-coordinate
   ([x]
@@ -92,7 +129,7 @@
 (defn make-coordinates ^"[Lorg.locationtech.jts.geom.Coordinate;"
   [xs]
   (cond
-    (instance? HasGeometry xs) (.getCoordinates (geometry xs))
+    (satisfies? HasGeometry xs) (.getCoordinates (geometry xs))
     (seqable? xs) (into-array Coordinate (map make-coordinate xs))
 
     :else (throw (IllegalArgumentException. (str "Unsupported type for make-coordinates "
@@ -142,36 +179,6 @@
   (.createGeometryCollection
    ^GeometryFactory *factory* (into-array Geometry gs)))
 
-;; functions to see what things are
-(defn geometry-type [g]
-  (let [t (.getGeometryType (geometry g))]
-    (case t
-      "Point"              :point 
-      "MultiPoint"         :multi-point
-      "Polygon"            :polygon
-      "MultiPolygon"       :multi-polygon
-      "LineString"         :line-string
-      "MultiLineString"    :multi-line-string
-      "GeometryCollection" :geometry-collection
-      :unknown)))
-
-;; TODO should these call geometry? since that is a question about a thing
-;; that has a geometry, rather than a geometry.
-(defn point? [g] (= "Point" (.getGeometryType (geometry g))))
-(defn line-string? [g] (= "LineString" (.getGeometryType (geometry g))))
-(defn polygon? [g] (= "Polygon" (.getGeometryType (geometry g))))
-(defn multi-point? [g] (= "MultiPoint" (.getGeometryType (geometry g))))
-(defn multi-line-string? [g] (= "MultiLineString" (.getGeometryType (geometry g))))
-(defn multi-polygon? [g] (= "MultiPolygon" (.getGeometryType (geometry g))))
-(defn collection? [g] (= "GeometryCollection" (.getGeometryType (geometry g))))
-(defn single?
-  "Is the geometry of g either a point, polygon or linestring?"
-  [g]
-  (let [t (.getGeometryType (geometry g))]
-    (or (= t "Point")
-        (= t "Polygon")
-        (= t "LineString"))))
-
 ;; core geometry operations
 (defn union
   ([g]   (update-geometry g (.union (geometry g))))
@@ -207,16 +214,19 @@
         (if (valid? buffed) buffed
             (update-geometry buffed (GeometryFixer/fix (geometry buffed)))))))
 
+(defn exterior-ring-of [g] (.getExteriorRing (geometry g)))
+
 (defn fill-holes [g]
   (-> g
-      (exterior-ring)
+      (exterior-ring-of)
       (make-coordinates)
       (make-polygon)
       (->> (update-geometry g))))
 
 ;; TODO should these update-geometry?
 (defn centroid-of      [g] (.getCentroid (geometry g)))
-(defn exterior-ring-of [g] (.getExteriorRing (geometry g)))
+(defn to-centroid      [g] (update-geometry g (.getCentroid (geometry g))))
+
 (defn convex-hull-of   [g] (.convexHull (geometry g)))
 ;; (defn holes-of         [g] TODO)
 (defn concave-hull-of
@@ -283,10 +293,19 @@
 
 (defn user-data [g] (.getUserData (geometry g)))
 
-(defn closest-point-on
-  "Return the closest point on a to b"
+(defn closest-points-on
+  "Return the closest points between a & b in same order"
   [a b]
   (let [op (org.locationtech.jts.operation.distance.DistanceOp.
             (geometry a) (geometry b))
-        [l1 _l2] (.nearestLocations op)]
-    (make-point (.getCoordinate ^GeometryLocation l1))))
+        [l1 l2] (.nearestLocations op)]
+    [(make-point (.getCoordinate ^GeometryLocation l1))
+     (make-point (.getCoordinate ^GeometryLocation l2))]))
+
+(defn endpoints-of [g]
+  (when (line-string? g)
+    (let [g (geometry g)
+          c (.getCoordinates g)]
+      [(make-point (first c)) (make-point (last c))])))
+
+(defn srid [g] (.getSRID (geometry g)))
