@@ -1,6 +1,7 @@
 (ns geometry.noder
   (:require [geometry.core :as g]
-            [geometry.index :as i])
+            [geometry.index :as i]
+            [taoensso.timbre :as log])
   (:import
    [org.locationtech.jts.noding.snapround SnapRoundingNoder]
    [org.locationtech.jts.noding
@@ -44,38 +45,55 @@
        (.getData s)))))
 
 (defn node-with-others
-  "Returns a linework (collection of linestrings) for which userdata is a map
-  having either ::lines or ::points depending on whether the linestring
-  is made from dissolving linear features or connecting a point feature.
-
-  in theory an output linestring could maybe have all if it was something like
-
-  *---L---*====P1====P2
-
-  this would dissolve to one string that has ::others [P1 P2] ::lines [L]
-  
-  This should be sufficient to build an adjacency matrix; you might
-  need to do a bit more geometry work to deal with the very rare case
-  above from collinear points
-
-  The resulting linework may not form a connected graph, mind"
+  "Returns [lines, {other feature -> point of connection}].
+  Lines from the input set of lines have user-data with ::lines [input lines];
+  some of these may be splits or joins of input lines.
+  "
   [linear-features other-features]
-  (let [index            (i/create linear-features)
-        connecting-lines (for [target other-features
-                               ;; TODO take n neighbours?
-                               line  (i/neighbours index target 500.0 1)]
-                           (let [[lp tp]
-                                 (g/closest-points-on line target)]
-                             (g/set-user-data!
-                              (g/make-line-string [lp tp])
-                              {::others [target]})))
-        ;; slightly ugly use of set-user-data! to pass provenance of lines
-        ;; down below.
-        network (node (concat linear-features connecting-lines)
-                      :get-meta
-                      (fn [x]
-                        (let [u (g/user-data x)]
-                          (if (::others u) u {::lines [x]})))
-                      :merge-meta
-                      (fn [xs ys] (merge-with into xs ys)))]
-    network))
+  
+  (let [linear-features (node linear-features
+                              :get-meta (fn [x] {::lines [x]})
+                              :merge-meta (fn [x y] (merge-with into x y)))
+        
+        index (i/create linear-features)
+
+        [linear-features target-points]
+        (loop [linear-features (set linear-features)
+               index           index
+               other-features  other-features
+               target-points   {}
+               ]
+          (if (empty? other-features)
+            [linear-features target-points]
+
+            (let [[target & other-features] other-features
+                  [line]  (i/neighbours index target 1000.0 1)]
+              (if line
+                (let [[line-point target-point] (g/closest-points-on line target)
+                      [line-start line-end]     (g/endpoints-of line)
+                      new-line                  (and (not= target-point line-point)
+                                                     (g/make-line-string [line-point target-point]))
+                      ]
+                  (if (or (= line-start line-point) (= line-end line-point))
+                    (recur (cond-> linear-features new-line (conj new-line))
+                           index
+                           other-features
+                           (assoc target-points target target-point))
+                    
+                    (let [[line-a line-b] (g/split-line line line-point)]
+                      (recur (-> linear-features
+                                 (disj line)
+                                 (conj line-a line-b)
+                                 (cond-> new-line (conj new-line)))
+                             (-> index
+                                 (i/delete line)
+                                 (i/add line-a)
+                                 (i/add line-b)
+                                 ;; (cond-> new-line (i/add new-line))
+                                 )
+                             other-features
+                             (assoc target-points target target-point)))))
+                (do (log/warn "No connecting line for %s, it will get lost" target)
+                    (recur linear-features index other-features target-points))))))]
+    [linear-features target-points]))
+

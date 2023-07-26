@@ -116,7 +116,7 @@
              (= t "Polygon")
              (= t "LineString")))))
 
-(defn make-coordinate
+(defn ^Coordinate make-coordinate
   ([x]
    (cond
      (coordinate? x) x
@@ -136,8 +136,8 @@
                                                  (class xs))))))
 
 (defn make-point
-  ([x]   (.createPoint ^GeometryFactory *factory* (make-coordinate x)))
-  ([x y] (.createPoint ^GeometryFactory *factory* (make-coordinate x y))))
+  ([x]   (.createPoint ^GeometryFactory *factory* ^Coordinate (make-coordinate x)))
+  ([x y] (.createPoint ^GeometryFactory *factory* ^Coordinate (make-coordinate x y))))
 
 (defn make-line-string [xys]
   (if (line-string? xys)
@@ -177,7 +177,7 @@
 
 (defn make-collection [gs]
   (.createGeometryCollection
-   ^GeometryFactory *factory* (into-array Geometry gs)))
+   ^GeometryFactory *factory* (into-array Geometry (map geometry gs))))
 
 ;; core geometry operations
 (defn union
@@ -185,7 +185,6 @@
   ([a b] (update-geometry a (.union (geometry a) (geometry b)))))
 
 (defn intersection
-  ([g]   (update-geometry g (.intersection (geometry g))))
   ([a b] (update-geometry a (.intersection (geometry a) (geometry b)))))
 
 (defn difference
@@ -214,7 +213,7 @@
         (if (valid? buffed) buffed
             (update-geometry buffed (GeometryFixer/fix (geometry buffed)))))))
 
-(defn exterior-ring-of [g] (.getExteriorRing (geometry g)))
+(defn exterior-ring-of [g] (.getExteriorRing ^Polygon (geometry g)))
 
 (defn fill-holes [g]
   (-> g
@@ -309,3 +308,27 @@
       [(make-point (first c)) (make-point (last c))])))
 
 (defn srid [g] (.getSRID (geometry g)))
+
+(defn ^Coordinate coordinate [g] (.getCoordinate (geometry g)))
+
+(defn split-line
+  "Split a thing having linear geometry at a thing having point geometry.
+  Returns two new linestrings. User data is copied from the original linestring."
+  [line point]
+  (let [line (geometry line)
+        point (geometry point)
+        [gl _] (.nearestLocations
+                (org.locationtech.jts.operation.distance.DistanceOp. line point))
+        coordinates (.getCoordinates line)
+        split-position (.getSegmentIndex gl)
+        split-coordinate (.getCoordinate point)
+        [c-start c-end] (split-at (inc split-position) coordinates)]
+    
+    [(-> (make-line-string (concat c-start [split-coordinate]))
+         (set-user-data! (user-data line)))
+     (-> (make-line-string (concat [split-coordinate] c-end))
+         (set-user-data! (user-data line)))]))
+
+
+(defn normalize [g]
+  (update-geometry g (.normalize (geometry g))))

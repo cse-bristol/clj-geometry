@@ -16,4 +16,7 @@
         org.geotools/gt-geopkg           {:mvn/version "26.1"
                                           :exclusions [org.locationtech.jts/jts-core]}
         org.geotools/gt-geojsondatastore {:mvn/version "26.1"
-                                          :exclusions [org.locationtech.jts/jts-core]}}}
+                                          :exclusions [org.locationtech.jts/jts-core]}
+
+        com.taoensso/timbre {:mvn/version "5.1.2"}
+        }}

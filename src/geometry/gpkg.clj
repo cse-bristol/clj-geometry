@@ -2,7 +2,8 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [geometry.feature :as f]
-            [geometry.core :as g])
+            [geometry.core :as g]
+            [taoensso.timbre :as log])
   (:import [org.opengis.feature.simple SimpleFeature]
            [org.opengis.referencing.operation MathTransform]
            [org.geotools.data DataStoreFinder DataUtilities DefaultTransaction]
@@ -40,6 +41,11 @@
        (transient {:table table-name :crs crs})
        (.getProperties feature))))))
 
+(defn- ->crs [x]
+  (cond (string? x) (CRS/decode x true)
+        (integer? x) (CRS/decode (str "EPSG:" x) true)
+        :else (throw (IllegalArgumentException. (str "Unknown type of CRS " x)))))
+
 (defn open [gpkg & {:keys [table-name to-crs key-transform]
                     :or {key-transform identity}}]
   (assert (.exists (io/as-file gpkg)))
@@ -47,6 +53,9 @@
                {"dbtype" "geopkg"
                 "database" (.getCanonicalPath (io/as-file gpkg))})
 
+        _ (try (.setGeometryFactory store g/*factory*) (catch Exception e (log/warn e)))
+        _ (try (.setCharset store (java.nio.charset.StandardCharsets/UTF_8))   (catch Exception e))
+        
         tables (if table-name
                  [table-name]
                  (into [] (.getTypeNames store)))
@@ -76,8 +85,8 @@
                        :table table
                        :tables tables
                        :transform (when to-crs
-                                    (let [from-crs (CRS/decode crs true)
-                                          to-crs (CRS/decode to-crs)]
+                                    (let [from-crs (->crs crs)
+                                          to-crs (->crs to-crs)]
                                       (CRS/findMathTransform from-crs to-crs true)))
                        :crs crs
                        :iterator new-iterator))
@@ -127,29 +136,32 @@
 
 (defn- kv-type [k v]
   [(name k)
-   {:accessor #(get % k)
-    :type
-    (if (instance? Geometry v)
-      Geometries/GEOMETRY
-      (case (.getCanonicalName (class v))
-        ("java.lang.String"
-         "java.lang.Float"
-         "java.lang.float"
-         "java.lang.Double"
-         "java.lang.double"
-         "java.lang.Boolean"
-         "java.lang.boolean"
-         "java.lang.Short"
-         "java.lang.short"
-         "java.lang.Integer"
-         "java.lang.int"
-         "java.lang.Long"
-         "java.util.Date"
-         "java.sql.Date"
-         "java.sql.Time"
-         "java.sql.Timestamp"
-         "java.math.BigDecimal") (.getCanonicalName (class v))
-        (str name ":String")))}])
+   (cond->
+       {:accessor #(get % k)
+        :type
+        (if (instance? Geometry v)
+          Geometries/GEOMETRY
+          (case (.getCanonicalName (class v))
+            ("java.lang.String"
+             "java.lang.Float"
+             "java.lang.float"
+             "java.lang.Double"
+             "java.lang.double"
+             "java.lang.Boolean"
+             "java.lang.boolean"
+             "java.lang.Short"
+             "java.lang.short"
+             "java.lang.Integer"
+             "java.lang.int"
+             "java.lang.Long"
+             "java.util.Date"
+             "java.sql.Date"
+             "java.sql.Time"
+             "java.sql.Timestamp"
+             "java.math.BigDecimal") (.getCanonicalName (class v))
+            (str name ":String")))}
+     (instance? Geometry v)
+     (assoc :srid (g/srid v)))])
 
 (defn- infer-spec
   "Given a feature, get a spec for its fields inferring types from their values.
@@ -178,7 +190,7 @@
            :srid (g/srid feature)}]]
         
         (map? feature)
-        (for [[k v] (sort feature)] (kv-type k v))
+        (for [[k v] (sort-by (comp str first) feature)] (kv-type k v))
 
         :else
         (throw (ex-info "Unable to infer schema for value" {:value feature}))))
