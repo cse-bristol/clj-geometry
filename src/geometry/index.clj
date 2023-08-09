@@ -1,5 +1,29 @@
 (ns geometry.index
-  "Defines spatial indexing features that can be used with geometry.core"
+  "Defines spatial indexing features that can be used with geometry.core
+
+  A spatial index provides an efficient way to spatially search a
+  collection of things which have geometry by their proximity (or other geometric predicates)
+
+  Usage is something like
+
+  (let [some-features ... ;; a seq of things which implement g/HasGeometry
+        i (index/create some-features)
+        
+        query-feature ... ;; a feature
+
+        ys (index/neighbours i query-feature 100.0 10)
+        ;; ys is a list of up to 10 some-features within 100 meters of query-feature
+
+        zs (index/intersecting i query-feature)
+        ;; zs is a list of everything from some-features which intersects query-feature
+        ]
+        
+     )
+
+
+  Indexes are immutable persistent datastructures, so index/add and index/delete
+  return a new index.
+  "
   (:import
    [org.locationtech.jts.geom Geometry Envelope Coordinate]
    [com.github.davidmoten.rtree2 RTree Entry]
@@ -50,12 +74,24 @@
            (sort-by (fn [^Entry x] (g/distance q (.value x)))
                     matches)))))
 
-(defn intersection [^RTree index query]
-  (let [b (rtree-rectangle-bounds query)
-        matches (into [] (.search index b))]
-    (keep (fn [^Entry e]
-            (when (g/intersects? query (.value e))
-              (.value e)))
-          matches)))
+(defmacro defquery [name doc op]
+  `(defn ~name ~doc [^RTree index# query#]
+     (let [b# (rtree-rectangle-bounds query#)
+           matches# (into [] (.search index# b#))]
+       (keep (fn [^Entry e#]
+               (when (~op query# (.value e#)) (.value e#)))
+             matches#))))
 
+(defquery intersecting
+  "Returns a seq of every element in the index that intersects with the query"
+  g/intersects?)
+(defquery touching
+  "Returns a seq of every element in the index that touches the query"
+  g/touches?)
+(defquery overlapping
+  "Returns a seq of every element in the index that overlaps the query"
+  g/overlaps?)
+(defquery covered-by
+  "Returns a seq of every element in the index that is covered entirely by the query"
+  g/covers?)
 
