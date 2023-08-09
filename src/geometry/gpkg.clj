@@ -1,4 +1,29 @@
 (ns geometry.gpkg
+  "Functions for reading and writing geopackages.
+
+  For example
+
+  (with-open [h (gpkg/open my-file)]
+     (doseq [f h]
+        (println f)))
+
+
+  The result of gpkg/open is a lazy sequence that is also closeable.
+  The entires of the sequence are geometry.feature/Feature instances,
+  so they have a geometry, table name & CRS, and then contain whatever
+  columns are in the geopackage table they came from.
+
+  You can write a seq of features with gpkg/write, for example
+
+  (with-open [h (gpkg/open my-file :table x)]
+      (gpkg/write output-file output-table
+         (for [feature h] (assoc feature :foo 1))))
+
+  this will infer the columns & geometry on the output features
+  which probably isn't good for production use. In that case you
+  will do well to supply the :schema argument to write.
+  "
+  
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [geometry.feature :as f]
@@ -245,7 +270,24 @@
                   (str name ":" type (when srid (str ":srid=" srid)))))))
 
 (defn write
-  ([file table-name features & {:keys [spec batch-insert-size]
+  "Write the given sequence of `features` into a geopackage at `file`
+  in a table called `table-name`
+
+  The `schema` argument is good to supply; without it the schema will be
+  inferred which may not be what you want.
+
+  A schema looks like a series of tuples, like
+
+  [field-name field-attributes]
+
+  field-attributes is a map having :type, :accessor and optionally :srid
+  for geometry types.
+
+  :type is the canonical name of a java class, or just :String, or Geometries/GEOMETRY.
+
+  Look at `infer-spec` for examples.
+  "
+  ([file table-name features & {:keys [schema batch-insert-size]
                                 :or {batch-insert-size 4000}}]
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [features      (reductions (fn [_ x] x) features)
