@@ -251,7 +251,16 @@
              (= Geometries/MULTIPOINT type)
              (= Geometries/MULTIPOLYGON type)
              (= Geometries/POINT type)
-             (= Geometries/POLYGON type)))
+             (= Geometries/POLYGON type)
+
+             (= :geometry type)
+             (= :geometry-collection type)
+             (= :line-string type)
+             (= :multi-line-string type)
+             (= :multi-point type)
+             (= :multi-polygon type)
+             (= :point type)
+             (= :polygon type)))
           spec)))
 
 (defn- ->feature-entry [table-name spec]
@@ -259,15 +268,32 @@
     (doto (FeatureEntry.)
       (.setTableName table-name)
       (.setGeometryColumn (first geom-col))
-      (.setGeometryType (:type (second geom-col))))))
+      (.setGeometryType (->geotools-type (:type (second geom-col)))))))
 
+
+(defn- ->geotools-type [type]
+  (cond
+    (class? type)  (.getCanonicalName type)
+    (string? type) type
+
+    (= :geometry type) Geometries/GEOMETRY
+    (= :geometry-collection type) Geometries/GEOMETRYCOLLECTION
+    (= :line-string type) Geometries/LINESTRING
+    (= :multi-line-string type) Geometries/MULTILINESTRING
+    (= :multi-point type) Geometries/MULTIPOINT
+    (= :multi-polygon type) Geometries/MULTIPOLYGON
+    (= :point type) Geometries/POINT
+    (= :polygon type) Geometries/POLYGON
+
+    :else type))
 
 (defn- ->geotools-schema [table-name spec]
   (DataUtilities/createType
    table-name
    (string/join ","
                 (for [[name {:keys [type srid]}] spec]
-                  (str name ":" type (when srid (str ":srid=" srid)))))))
+                  (let [type (->geotools-type type)]
+                    (str name ":" type (when srid (str ":srid=" srid))))))))
 
 (defn write
   "Write the given sequence of `features` into a geopackage at `file`
