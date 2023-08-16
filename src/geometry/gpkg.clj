@@ -291,7 +291,7 @@
                                 :or {batch-insert-size 4000}}]
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [features      (reductions (fn [_ x] x) features)
-           spec          (vec (or spec (infer-spec (first features))))
+           spec          (vec (or schema (infer-spec (first features))))
            getters       (mapv (fn [[k v]]
                                  (:accessor v #(get % k)))
                                spec)

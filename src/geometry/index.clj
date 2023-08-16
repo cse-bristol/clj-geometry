@@ -63,6 +63,13 @@
 (defn create [xs] (reduce add EMPTY xs))
 
 (defn neighbours [^RTree index q range n]
+  "Find nearest indexed feature(s) using RTree.nearest() ref
+   https://javadoc.io/static/com.github.davidmoten/rtree/0.11/com/github/davidmoten/rtree/RTree.html#nearest-com.github.davidmoten.rtree.geometry.Rectangle-double-int-
+   If more than one entry found they are sorted nearest first.
+   `q`: query shape
+   `range`: max distance of returned entries from a rectangle around q
+   `n`: max number of entries to return
+   "
   (let [matches (into [] (.nearest index
                                    (rtree-rectangle-bounds q)
                                    (double range) (int n)))]
