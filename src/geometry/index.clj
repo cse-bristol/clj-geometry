@@ -64,12 +64,12 @@
 
 (defn neighbours [^RTree index q range n]
   "Find nearest indexed feature(s) using RTree.nearest() ref
-   https://javadoc.io/static/com.github.davidmoten/rtree/0.11/com/github/davidmoten/rtree/RTree.html#nearest-com.github.davidmoten.rtree.geometry.Rectangle-double-int-
-   If more than one entry found they are sorted nearest first.
-   `q`: query shape
-   `range`: max distance of returned entries from a rectangle around q
-   `n`: max number of entries to return
-   "
+  https://javadoc.io/static/com.github.davidmoten/rtree/0.11/com/github/davidmoten/rtree/RTree.html#nearest-com.github.davidmoten.rtree.geometry.Rectangle-double-int-
+  Entries sorted nearest first.
+  `q`: query shape
+  `range`: max distance of returned entries from a rectangle around q
+  `n`: max number of entries to return
+  "
   (let [matches (into [] (.nearest index
                                    (rtree-rectangle-bounds q)
                                    (double range) (int n)))]
@@ -80,6 +80,15 @@
       (map (fn [^Entry e] (.value e))
            (sort-by (fn [^Entry x] (g/distance q (.value x)))
                     matches)))))
+
+(defn search-intersects [^RTree index q]
+  "Find indexed feature(s) intersecting a rectangle around q using RTree.search(Rectangle r) ref:
+  https://javadoc.io/static/com.github.davidmoten/rtree/0.11/com/github/davidmoten/rtree/RTree.html#search-com.github.davidmoten.rtree.geometry.Rectangle-
+  Found entries are not sorted.
+  `q`: query shape
+  "
+  (into [] (.search index (rtree-rectangle-bounds q))))
+
 
 (defmacro defquery [name doc op]
   `(defn ~name ~doc [^RTree index# query#]
