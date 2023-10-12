@@ -331,4 +331,4 @@
 
 
 (defn normalize [g]
-  (update-geometry g (.normalize (geometry g))))
+  (update-geometry g (.norm (geometry g))))

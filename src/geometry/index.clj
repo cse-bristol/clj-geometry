@@ -27,7 +27,9 @@
   (:import
    [org.locationtech.jts.geom Geometry Envelope Coordinate]
    [com.github.davidmoten.rtree2 RTree Entry]
-   [com.github.davidmoten.rtree2.geometry Geometries])
+   [com.github.davidmoten.rtree2.geometry Geometries]
+   [com.github.davidmoten.rtree2.internal EntryDefault]
+   [org.locationtech.jts.geom.prep PreparedGeometryFactory])
   (:require [geometry.core :as g]))
 
 (defn- rtree-rectangle-bounds ^com.github.davidmoten.rtree2.geometry.Rectangle [g]
@@ -60,7 +62,14 @@
 (defn delete [^RTree index x]
   (.delete index x (rtree-bounds x)))
 
-(defn create [xs] (reduce add EMPTY xs))
+(defn create ^RTree [xs]
+  (RTree/create
+   (new java.util.ArrayList
+        (->> xs
+             (into []
+                   (comp
+                    (filter identity)
+                    (map #(new EntryDefault % (rtree-bounds %)))))))))
 
 (defn neighbours [^RTree index q range n]
   "Find nearest indexed feature(s) using RTree.nearest() ref
@@ -93,21 +102,22 @@
 (defmacro defquery [name doc op]
   `(defn ~name ~doc [^RTree index# query#]
      (let [b# (rtree-rectangle-bounds query#)
-           matches# (into [] (.search index# b#))]
+           matches# (into [] (.search index# b#))
+           prepped# (PreparedGeometryFactory/prepare query#)]
        (keep (fn [^Entry e#]
-               (when (~op query# (.value e#)) (.value e#)))
+               (when (~op prepped# (.value e#)) (.value e#)))
              matches#))))
 
 (defquery intersecting
   "Returns a seq of every element in the index that intersects with the query"
-  g/intersects?)
+  #(.intersects %1 (g/geometry %2)))
 (defquery touching
   "Returns a seq of every element in the index that touches the query"
-  g/touches?)
+  #(.touches %1 (g/geometry %2)))
 (defquery overlapping
   "Returns a seq of every element in the index that overlaps the query"
-  g/overlaps?)
+  #(.overlaps %1 (g/geometry %2)))
 (defquery covered-by
   "Returns a seq of every element in the index that is covered entirely by the query"
-  g/covers?)
+  #(.covers %1 (g/geometry %2)))
 

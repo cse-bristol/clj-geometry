@@ -2,8 +2,7 @@
   (:require [geometry.gpkg :as sut]
             [clojure.test :as t]
             [clojure.java.io :as io]
-            [geometry.core :as g]
-            )
+            [geometry.core :as g])
   (:import [org.geotools.geometry.jts Geometries]))
 
 (t/deftest test-write-read
@@ -26,10 +25,8 @@
       ;; read them back and compare
       
       (with-open [in (sut/open f "test-table")]
-        (t/is (= [{:geometry (g/make-point 1 2) "id" 1
-                   :table "test-table" :crs "EPSG:27700"}
-                  {:geometry (g/make-point 4 5) "id" 2
-                   :table "test-table" :crs "EPSG:27700"}]
+        (t/is (= [{:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700"}
+                  {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700"}]
 
                  ;; we map into {} to strip off the feature type
                  ;; since we want to do a simple comparison here

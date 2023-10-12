@@ -263,14 +263,6 @@
              (= :polygon type)))
           spec)))
 
-(defn- ->feature-entry [table-name spec]
-  (let [geom-col (spec-geom-field spec)]
-    (doto (FeatureEntry.)
-      (.setTableName table-name)
-      (.setGeometryColumn (first geom-col))
-      (.setGeometryType (->geotools-type (:type (second geom-col)))))))
-
-
 (defn- ->geotools-type [type]
   (cond
     (class? type)  (.getCanonicalName type)
@@ -286,6 +278,13 @@
     (= :polygon type) Geometries/POLYGON
 
     :else type))
+
+(defn- ->feature-entry [table-name spec]
+  (let [geom-col (spec-geom-field spec)]
+    (doto (FeatureEntry.)
+      (.setTableName table-name)
+      (.setGeometryColumn (first geom-col))
+      (.setGeometryType (->geotools-type (:type (second geom-col)))))))
 
 (defn- ->geotools-schema [table-name spec]
   (DataUtilities/createType
