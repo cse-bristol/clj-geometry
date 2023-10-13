@@ -6,7 +6,8 @@
    [org.locationtech.jts.noding.snapround SnapRoundingNoder]
    [org.locationtech.jts.noding
     SegmentString MCIndexNoder NodedSegmentString IntersectionAdder
-    SegmentStringDissolver SegmentStringDissolver$SegmentStringMerger]
+    SegmentStringDissolver SegmentStringDissolver$SegmentStringMerger
+    SegmentStringUtil]
    [org.locationtech.jts.geom Coordinate]
    [org.locationtech.jts.algorithm RobustLineIntersector]
    [org.locationtech.jts.geom Geometry Point Envelope PrecisionModel GeometryFactory Coordinate LineString]))
@@ -24,8 +25,9 @@
         
         _ (.computeNodes
            noder
-           (for [f linear-features]
-             (NodedSegmentString. (g/make-coordinates f) (get-meta f))))
+           (for [f linear-features
+                 g (SegmentStringUtil/extractSegmentStrings (g/geometry f))]
+             (NodedSegmentString. (g/make-coordinates g) (get-meta f))))
         
         dissolver (SegmentStringDissolver.
                    (reify SegmentStringDissolver$SegmentStringMerger
