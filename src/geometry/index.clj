@@ -96,7 +96,7 @@
   Found entries are not sorted.
   `q`: query shape
   "
-  (doall (into [] (.search index (rtree-rectangle-bounds q)))))
+  (into [] (.search index (rtree-rectangle-bounds q))))
 
 
 (defmacro defquery [name doc op]
