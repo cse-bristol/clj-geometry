@@ -322,6 +322,7 @@
                                spec)
            feature-entry (->feature-entry table-name spec)
            _ (def -last-spec spec)
+           _ (println spec)
            [_ {:keys [srid]}]          (spec-geom-field spec)]
          (.setBounds feature-entry
                      (ReferencedEnvelope. 0 0 0 0 (CRS/decode (str "EPSG:" srid))))

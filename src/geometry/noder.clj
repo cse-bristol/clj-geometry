@@ -27,7 +27,9 @@
            noder
            (for [f linear-features
                  g (SegmentStringUtil/extractSegmentStrings (g/geometry f))]
-             (NodedSegmentString. (g/make-coordinates g) (get-meta f))))
+             g
+             ;;(NodedSegmentString. (g/make-coordinates g) (get-meta f))
+             ))
         
         dissolver (SegmentStringDissolver.
                    (reify SegmentStringDissolver$SegmentStringMerger

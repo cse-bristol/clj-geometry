@@ -73,7 +73,7 @@
 
 (defn neighbours [^RTree index q range n]
   "Find nearest indexed feature(s) using RTree.nearest() ref
-  https://javadoc.io/static/com.github.davidmoten/rtree/0.11/com/github/davidmoten/rtree/RTree.html#nearest-com.github.davidmoten.rtree.geometry.Rectangle-double-int-
+  https://javadoc.io/static/com.github.davidmoten/rtree/0.9/com/github/davidmoten/rtree/RTree.html#nearest-com.github.davidmoten.rtree.geometry.Rectangle-double-int-
   Entries sorted nearest first.
   `q`: query shape
   `range`: max distance of returned entries from a rectangle around q
@@ -92,7 +92,7 @@
 
 (defn search-intersects [^RTree index q]
   "Find indexed feature(s) intersecting a rectangle around q using RTree.search(Rectangle r) ref:
-  https://javadoc.io/static/com.github.davidmoten/rtree/0.11/com/github/davidmoten/rtree/RTree.html#search-com.github.davidmoten.rtree.geometry.Rectangle-
+  https://javadoc.io/static/com.github.davidmoten/rtree/0.9/com/github/davidmoten/rtree/RTree.html#search-com.github.davidmoten.rtree.geometry.Rectangle-
   Found entries are not sorted.
   `q`: query shape
   "
