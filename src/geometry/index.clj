@@ -94,7 +94,7 @@
   `(defn ~name ~doc [^RTree index# query#]
      (let [b# (rtree-rectangle-bounds query#)
            matches# (into [] (.search index# b#))
-           prepped# (PreparedGeometryFactory/prepare query#)]
+           prepped# (PreparedGeometryFactory/prepare (g/geometry query#))]
        (keep (fn [^Entry e#]
                (when (~op prepped# (.value e#)) (.value e#)))
              matches#))))
