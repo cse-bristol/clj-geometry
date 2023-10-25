@@ -19,6 +19,7 @@
    [org.locationtech.jts.geom.util GeometryFixer]
    [org.locationtech.jts.io WKTReader]
    [org.locationtech.jts.algorithm.hull ConcaveHull]
+   [org.locationtech.jts.algorithm MinimumBoundingCircle]
    [org.locationtech.jts.precision GeometryPrecisionReducer]
    [org.locationtech.jts.operation.distance GeometryLocation]
    [org.locationtech.jts.geom
@@ -236,6 +237,11 @@
   [g ^double length-ratio]
   {:pre [(<= 0.0 length-ratio 1.0)]}
   (ConcaveHull/concaveHullByLengthRatio (geometry g) length-ratio))
+
+(defn minimum-bounding-circle-of
+  "See https://locationtech.github.io/jts/javadoc/org/locationtech/jts/algorithm/MinimumBoundingCircle.html"
+  [g]
+  (MinimumBoundingCircle. (geometry g)))
 
 (defn geometries
   "Get a collection of the contained geometries within g;
