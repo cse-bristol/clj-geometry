@@ -243,10 +243,14 @@
   [g]
   (MinimumBoundingCircle. (geometry g)))
 
+(defn boundary-of
+  "See https://locationtech.github.io/jts/javadoc/org/locationtech/jts/geom/Geometry.html#getBoundary--"
+  [g] (.getBoundary (geometry g)))
+
 (defn geometries
   "Get a collection of the contained geometries within g;
   on geometry collections this may still return multipart geoms.
-  See also simple-geometries if you want to flatten something"
+  See also single-geometries if you want to flatten something"
   [g]
   (let [g (geometry g)]
     (loop [iter 0
