@@ -67,7 +67,7 @@
             [linear-features target-points]
 
             (let [[target & other-features] other-features
-                  [line]  (i/neighbours index target 1000.0 1)]
+                  line  (first (i/neighbours index target 1000.0 5))]
               (if line
                 (let [[line-point target-point] (g/closest-points-on line target)
                       [line-start line-end]     (g/endpoints-of line)
