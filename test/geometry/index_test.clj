@@ -62,3 +62,26 @@
                                                 (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")])
                                  (g/read-wkt "POLYGON ((0 0, 20 0, 20 20, 0 20, 0 0))"))
               (mapv g/normalize)))))
+
+(deftest test-neighbours
+  (let [idx (index/create [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
+                           (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")
+                           (g/read-wkt "POLYGON ((1010 1010, 1020 1010, 1020 1020, 1010 1020, 1010 1010))")])]
+    (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"
+                 "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))"]
+                (mapv g/read-wkt)
+                (mapv g/normalize))
+           (->> (index/neighbours idx (g/read-wkt "POINT (5 5)") 100 10)
+                (mapv g/normalize))))
+    
+    (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]
+                (mapv g/read-wkt)
+                (mapv g/normalize))
+           (->> (index/neighbours idx (g/read-wkt "POINT (5 5)") 1 10)
+                (mapv g/normalize))))
+    
+    (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]
+                (mapv g/read-wkt)
+                (mapv g/normalize))
+           (->> (index/neighbours idx (g/read-wkt "POINT (5 5)") 100 1)
+                (mapv g/normalize))))))
