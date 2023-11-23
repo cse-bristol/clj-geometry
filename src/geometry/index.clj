@@ -71,24 +71,31 @@
                     (filter identity)
                     (map #(new EntryDefault % (rtree-bounds %)))))))))
 
-(defn neighbours [^RTree index q range n]
+(defn neighbours
   "Find nearest indexed feature(s) using RTree.nearest() ref
-  https://javadoc.io/static/com.github.davidmoten/rtree/0.9/com/github/davidmoten/rtree/RTree.html#nearest-com.github.davidmoten.rtree.geometry.Rectangle-double-int-
-  Entries sorted nearest first.
-  `q`: query shape
-  `range`: max distance of returned entries from a rectangle around q
-  `n`: max number of entries to return
-  "
+   https://javadoc.io/static/com.github.davidmoten/rtree/0.11/com/github/davidmoten/rtree/RTree.html#nearest-com.github.davidmoten.rtree.geometry.Rectangle-double-int-
+   If more than one entry found they are sorted nearest first.
+   `q`: query shape
+   `range`: max distance of returned entries from a rectangle around q
+   `n`: max number of entries to return
+   
+   Be careful when using an `n` of one - the indexed feature whose
+   bounding box is closest to the bounding box of the query geometry
+   is not the same as the index feature which is closest to the query
+   geometry. It's best to use a higher `n` and take the first entry
+   as entries are sorted by actual distance.
+   "
+  [^RTree index q range n]
   (let [matches (into [] (.nearest index
                                    (rtree-rectangle-bounds q)
                                    (double range) (int n)))]
     (if (= n 1)
       (let [m (first matches)]
         (and m [(.value ^Entry m)]))
-      
-      (map (fn [^Entry e] (.value e))
-           (sort-by (fn [^Entry x] (g/distance q (.value x)))
-                    matches)))))
+
+      (->> matches
+           (sort-by (fn [^Entry x] (g/distance q (.value x))))
+           (map (fn [^Entry e] (.value e)))))))
 
 (defmacro defquery [name doc op]
   `(defn ~name ~doc [^RTree index# query#]
