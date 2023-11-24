@@ -5,11 +5,10 @@
   (:import
    [org.locationtech.jts.noding.snapround SnapRoundingNoder]
    [org.locationtech.jts.noding
-    SegmentString MCIndexNoder NodedSegmentString IntersectionAdder
-    SegmentStringDissolver SegmentStringDissolver$SegmentStringMerger]
-   [org.locationtech.jts.geom Coordinate]
-   [org.locationtech.jts.algorithm RobustLineIntersector]
-   [org.locationtech.jts.geom Geometry Point Envelope PrecisionModel GeometryFactory Coordinate LineString]))
+    SegmentString NodedSegmentString 
+    SegmentStringDissolver SegmentStringDissolver$SegmentStringMerger
+    ]
+   ))
 
 (defn node
   "Given a set of linear features, node and dissolve to a linework
