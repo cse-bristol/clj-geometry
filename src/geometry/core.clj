@@ -22,6 +22,10 @@
    [org.locationtech.jts.algorithm MinimumBoundingCircle]
    [org.locationtech.jts.precision GeometryPrecisionReducer]
    [org.locationtech.jts.operation.distance GeometryLocation]
+   [org.locationtech.jts.operation.polygonize Polygonizer]
+   [org.locationtech.jts.operation.buffer BufferOp BufferParameters]
+   [org.locationtech.jts.noding.snapround SnapRoundingNoder]
+   [org.locationtech.jts.noding SegmentStringDissolver SegmentStringUtil]
    [org.locationtech.jts.geom
     LinearRing
     Coordinate Geometry GeometryFactory LineString Point Polygon
@@ -90,10 +94,23 @@
       "LineString"         :line-string
       "MultiLineString"    :multi-line-string
       "GeometryCollection" :geometry-collection
+      "LinearRing"         :linear-ring
       :unknown)))
 
+(defn geometry? 
+  "Tests if a thing is an actual JTS geometry. Features and Strings will return
+   false."
+  [x] 
+  (instance? Geometry x))
+
+(defn has-geometry?
+  "Tests if a thing implements the HasGeometry protocol. This does not mean
+   they actually have a geometry - e.g. all strings will return true."
+  [x] 
+  (satisfies? HasGeometry x))
+
 ;; TODO should these call geometry? since that is a question about a thing
-;; that has a geometry, rather than a geometry.
+;; that has a geometry, rather than a geometry
 (defn point? [g] (and (satisfies? HasGeometry g)
                       (= "Point" (.getGeometryType (geometry g)))))
 (defn line-string? [g] (and (satisfies? HasGeometry g)
@@ -115,7 +132,17 @@
        (let [t (.getGeometryType (geometry g))]
          (or (= t "Point")
              (= t "Polygon")
-             (= t "LineString")))))
+             (= t "LineString")
+             (= t "LinearRing")))))
+(defn multi?
+  "Is the geometry of g either a multi-point, multi-polygon, multi-linestring or geometry collection?"
+  [g]
+  (and (satisfies? HasGeometry g)
+       (let [t (.getGeometryType (geometry g))]
+         (or (= t "MultiPoint")
+             (= t "MultiPolygon")
+             (= t "MultiLineString")
+             (= t "GeometryCollection")))))
 
 (defn ^Coordinate make-coordinate
   ([x]
@@ -193,8 +220,23 @@
   [a b]
   (update-geometry a (.difference (geometry a) (geometry b))))
 
-(defn buffer [g ^double r]
-  (update-geometry g (.buffer (geometry g) r)))
+(def end-cap-styles {:round 1 :flat 2 :square 3})
+(def join-styles {:round 1 :mitre 2 :bevel 3})
+
+(defn buffer
+  ([g ^double r]
+   (.buffer (geometry g) (double r)))
+
+  ([g r quad-segs end-cap-style join-style]
+   (buffer g r quad-segs end-cap-style join-style 5.0))
+
+  ([g r quad-segs end-cap-style join-style mitre-limit]
+   (BufferOp/bufferOp (geometry g)
+                      (double r)
+                      (BufferParameters. quad-segs
+                                         (end-cap-styles end-cap-style)
+                                         (join-styles join-style)
+                                         mitre-limit))))
 
 (defn length ^double [g] (.getLength (geometry g)))
 (defn area ^double [g] (.getArea (geometry g)))
@@ -210,7 +252,9 @@
 ;; other operations
 (defn make-valid [g]
   (if (valid? g) g
-      (let [buffed (buffer g 0.0)]
+      (let [buffed (if (#{:polygon :multi-polygon} (geometry-type g))
+                     (buffer g 0.0)
+                     g)]
         (if (valid? buffed) buffed
             (update-geometry buffed (GeometryFixer/fix (geometry buffed)))))))
 
@@ -223,12 +267,36 @@
       (make-polygon)
       (->> (update-geometry g))))
 
-;; TODO should these update-geometry?
-(defn centroid-of      [g] (.getCentroid (geometry g)))
-(defn to-centroid      [g] (update-geometry g (.getCentroid (geometry g))))
+(defn centroid-of [g] (.getCentroid (geometry g)))
 
-(defn convex-hull-of   [g] (.convexHull (geometry g)))
-;; (defn holes-of         [g] TODO)
+(defn to-centroid 
+  "If `g` is a feature, return a feature with the centroid as the geometry.
+   Otherwise identical to `centroid-of`"
+  [g] 
+  (update-geometry g (.getCentroid (geometry g))))
+
+(defn boundary-of [g] (.getBoundary (geometry g)))
+
+(defn to-boundary 
+  "If `g` is a feature, return a feature with the boundary as the geometry.
+   Otherwise identical to `boundary-of`"
+  [g] 
+  (update-geometry g (.getBoundary (geometry g))))
+
+(defn bounding-box [g]
+  (let [envelope (.getEnvelopeInternal (geometry g))]
+    {:xmin (.getMinX envelope)
+     :ymin (.getMinY envelope)
+     :xmax (.getMaxX envelope)
+     :ymax (.getMaxY envelope)}))
+
+(defn min-x [g] (.getMinX (.getEnvelopeInternal (geometry g))))
+(defn min-y [g] (.getMinY (.getEnvelopeInternal (geometry g))))
+(defn max-x [g] (.getMaxX (.getEnvelopeInternal (geometry g))))
+(defn max-y [g] (.getMaxY (.getEnvelopeInternal (geometry g))))
+
+(defn convex-hull-of [g] (.convexHull (geometry g)))
+
 (defn concave-hull-of
   "`length-ratio`: Maximum Edge Length Ratio - determine the Maximum Edge Length
    as a fraction of the difference between the longest and shortest edge lengths
@@ -260,7 +328,7 @@
         geoms))))
 
 (defn single-geometries
-  "Get a collection of simple geometries within g (optionally of certain type(s))"
+  "Get a collection of single geometries within g (optionally of certain type(s))"
   ([g]
    (let [g (geometry g)]
      (loop [iter 0
@@ -273,8 +341,25 @@
          geoms))))
   ([g type]
    (let [type (if (keyword? type) #{type} (set type))]
-     (filter #(comp type (geometry-type %)) (single-geometries g)))))
+     (filter #(-> % (geometry-type) (type)) (single-geometries g)))))
 
+(defn polygons 
+  "Get a collection of only the polygons within g"
+  [g] 
+  (single-geometries g :polygon))
+
+(defn line-strings
+  "Get a collection of only the line-strings and linear-rings within g"
+  [g]
+  (single-geometries g #{:line-string :linear-ring}))
+
+(defn holes-of [g]
+  (->> (polygons (geometry g))
+       (mapcat
+        (fn [^Geometry geom]
+          (for [i (range (.getNumInteriorRing geom))]
+            (make-polygon (.getCoordinates (.getInteriorRingN geom i))))))
+       (filter identity)))
 
 (defn write-wkt [g] (.toText (geometry g)))
 
@@ -339,6 +424,58 @@
      (-> (make-line-string (concat [split-coordinate] c-end))
          (set-user-data! (user-data line)))]))
 
+(defn- node-paths
+  "Basic noder for use in `polygonize`. See geometry.noder for
+   public noder.
+   
+   From JTS docs: To specify 3 decimal places of precision,
+   use a scale factor of 1000.
+   To specify -3 decimal places of precision (i.e. rounding to
+   the nearest 1000), use a scale factor of 0.001."
+  [paths snapping-scale-factor]
+  (let [paths (map geometry paths)
+        pm (new PrecisionModel (float snapping-scale-factor))
+        noder (new SnapRoundingNoder pm)
+        noded-paths (mapcat #(SegmentStringUtil/extractSegmentStrings %) paths)
+        noded-paths (do (.computeNodes noder noded-paths)
+                        (.getNodedSubstrings noder))
+        dissolver (new SegmentStringDissolver)
+        noded-paths (do (.dissolve dissolver noded-paths)
+                        (.getDissolved dissolver))]
+    (SegmentStringUtil/toGeometry noded-paths *factory*)))
+
+(defn polygonize
+  "From JTS docs: To specify 3 decimal places of precision,
+   use a scale factor of 1000.
+   To specify -3 decimal places of precision (i.e. rounding to
+   the nearest 1000), use a scale factor of 0.001."
+  [paths & {:keys [snapping-scale-factor]
+            :or {snapping-scale-factor 10.0}}]
+  (let [paths (mapcat line-strings paths)
+        noded-paths (node-paths paths snapping-scale-factor)
+        polygonizer (doto (new Polygonizer)
+                      (.add noded-paths))
+        polygons (.getPolygons polygonizer)]
+    polygons))
+
+(defn cut-polygon [polygon paths &
+                   {:keys [snapping-scale-factor]
+                    :or {snapping-scale-factor 10.0}}]
+  (if (empty? paths)
+    [polygon]
+    (let [holes (make-multi-polygon (holes-of polygon))
+          parts (-> paths
+                    (conj (boundary-of polygon))
+                    (polygonize :snapping-scale-factor snapping-scale-factor))]
+      (for [part parts
+            part (single-geometries (difference part holes))]
+        part))))
 
 (defn normalize [g]
   (update-geometry g (.norm (geometry g))))
+
+(defn thinness-ratio
+  "4π(A/P²)"
+  [g]
+  (let [g (geometry g)]
+    (* 4 Math/PI (/ (area g) (Math/pow (.getLength g) 2)))))
