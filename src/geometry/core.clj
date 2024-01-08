@@ -353,6 +353,19 @@
   [g]
   (single-geometries g #{:line-string :linear-ring}))
 
+(defn linearize
+  "Convert geometry to a collection of line-strings and linear-rings. Multipart
+   geometries will be expanded; polygons will be converted to their boundaries."
+  [g]
+  (case (geometry-type g)
+    :polygon             [(boundary-of g)]
+    :multi-polygon       (map boundary-of (single-geometries g))
+    :line-string         [g]
+    :linear-ring         [g]
+    :multi-line-string   (single-geometries g)
+    :geometry-collection (mapcat linearize (single-geometries g))
+    []))
+
 (defn holes-of [g]
   (->> (polygons (geometry g))
        (mapcat
@@ -451,7 +464,7 @@
    the nearest 1000), use a scale factor of 0.001."
   [paths & {:keys [snapping-scale-factor]
             :or {snapping-scale-factor 10.0}}]
-  (let [paths (mapcat line-strings paths)
+  (let [paths (mapcat linearize paths)
         noded-paths (node-paths paths snapping-scale-factor)
         polygonizer (doto (new Polygonizer)
                       (.add noded-paths))
