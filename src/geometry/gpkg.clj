@@ -71,14 +71,29 @@
         (integer? x) (CRS/decode (str "EPSG:" x) true)
         :else (throw (IllegalArgumentException. (str "Unknown type of CRS " x)))))
 
-(defn open [gpkg & {:keys [table-name to-crs key-transform]
-                    :or {key-transform identity}}]
+(defn open 
+  "The result of gpkg/open is a lazy sequence that is also closeable.
+   The entires of the sequence are geometry.feature/Feature instances,
+   so they have a geometry, table name & CRS, and then contain whatever
+   columns are in the geopackage table they came from.
+   
+   (with-open [h (gpkg/open my-file)]
+     (doseq [f h]
+        (println f)))
+   
+   If you know the geometries have a certain precision, you can
+   pass a GeometryFactory with a PrecisionModel set. If you do 
+   not know the precision of the geometries, but want them to be
+   of a certain precision, use core/change-precision instead."
+  [gpkg & {:keys [table-name to-crs key-transform geometry-factory]
+                    :or {key-transform identity
+                         geometry-factory g/*factory*}}]
   (assert (.exists (io/as-file gpkg)))
   (let [store (DataStoreFinder/getDataStore
                {"dbtype" "geopkg"
                 "database" (.getCanonicalPath (io/as-file gpkg))})
 
-        _ (try (.setGeometryFactory store g/*factory*) (catch Exception e (log/warn e)))
+        _ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
         _ (try (.setCharset store (java.nio.charset.StandardCharsets/UTF_8))   (catch Exception e))
         
         tables (if table-name

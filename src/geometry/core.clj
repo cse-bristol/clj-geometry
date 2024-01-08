@@ -64,7 +64,15 @@
     (GeometryFactory. patched-csf)))
 
 (def ^:dynamic ^GeometryFactory *factory*
-  (geometry-factory :cm-precision 10))
+  "The default GeometryFactory. Doesn't set any PrecisionModel, as this only
+   causes all coordinates to be snapped to a grid, rather than running whole
+   geometries through e.g. the GeometryPrecisionReducer. 
+   
+   As a result it is only safe if you already know that the geometries all 
+   have a certain precision - in other cases it will cause valid geometries
+   (that could remain valid at the requested precision using the 
+   GeometryPrecisionReducer) to become invalid."
+  (geometry-factory))
 
 ;; protocol for things with geometry
 (defprotocol HasGeometry
@@ -387,9 +395,10 @@
   [g ^double scale-factor]
   (update-geometry
    g
-   (GeometryPrecisionReducer/reduce
-    (geometry g)
-    (PrecisionModel. scale-factor))))
+   (let [pm (new PrecisionModel (float scale-factor))
+         gpr (doto (new GeometryPrecisionReducer pm)
+               (.setChangePrecisionModel true))]
+     (.reduce gpr (geometry g)))))
 
 (defn set-user-data!
   "Mutates the user-data in the geometry associated with x"
