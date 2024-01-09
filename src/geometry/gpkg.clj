@@ -58,12 +58,12 @@
                    {"dbtype" "geopkg"
                     "database" (.getCanonicalPath (io/as-file file))})
 
-            _ (try (.setCharset store (java.nio.charset.StandardCharsets/UTF_8))   (catch Exception e))]
+            _ (try (.setCharset store (java.nio.charset.StandardCharsets/UTF_8)) (catch Exception _))]
         (try
           (set (.getTypeNames store))
           (finally (.close geopackage))))
       (with-open [conn (jdbc/get-connection (format "jdbc:sqlite:%s"
-                                                    (.getCanonicalPath file)))]
+                                                    (.getCanonicalPath (io/as-file file))))]
         (jdbc/with-transaction [tx conn]
           (let [q (if include-system?
                     "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
@@ -114,7 +114,7 @@
   [^java.io.File file ^String table key-transform]
   (let [ds   (jdbc/get-datasource
               (format "jdbc:sqlite:%s"
-                      (.getCanonicalPath file)))
+                      (.getCanonicalPath (io/as-file file))))
 
         ;; unfortunately next.jdbc is not suitable
         ;; for streaming results as a lazy seq
@@ -461,7 +461,7 @@
                                    (string/join ", " (repeat (count cols) "?")))]
 
            (with-open [conn (jdbc/get-connection (format "jdbc:sqlite:%s"
-                                                         (.getCanonicalPath file)))]
+                                                         (.getCanonicalPath (io/as-file file))))]
              (jdbc/with-transaction [tx conn]
                (jdbc/execute! tx [table-stmt])
                (jdbc/execute-batch!
