@@ -28,7 +28,8 @@
             [clojure.string :as string]
             [geometry.feature :as f]
             [geometry.core :as g]
-            [taoensso.timbre :as log])
+            [taoensso.timbre :as log]
+            [next.jdbc :as jdbc])
   (:import [org.opengis.feature.simple SimpleFeature]
            [org.opengis.referencing.operation MathTransform]
            [org.geotools.data DataStoreFinder DataUtilities DefaultTransaction]
@@ -43,33 +44,106 @@
             SQLiteConfig$TransactionMode
             SQLiteConfig$LockingMode]))
 
-(defn table-names [gpkg])
+(defn table-names
+  "Get the tables present in the geopackage or sqlite database, as a
+   set of strings."
+  [file & {:keys [spatial-only? include-system?]
+           :or {spatial-only? false include-system? false}}]
+  (let [file (io/as-file file)]
+    (if spatial-only?
+      (let [geopackage (GeoPackage. file)
+            store (DataStoreFinder/getDataStore
+                   {"dbtype" "geopkg"
+                    "database" (.getCanonicalPath (io/as-file file))})
 
-(defn- ->feature [key-transform
-                  ^MathTransform crs-transform
-                  ^SimpleFeature feature
-                  table-name crs]
-  (let [geometry-property-name (.getName
-                                (.getDefaultGeometryProperty feature))]
-    (f/map->Feature
-     (persistent!
-      (reduce
-       (fn [out property]
-         (let [is-geometry (= (.getName property) geometry-property-name)]
-           (assoc! out
-                   (if is-geometry :geometry
-                       (key-transform (.getLocalPart (.getName property))))
-                   (cond-> (.getValue property)
-                     (and is-geometry crs-transform)
-                     (JTS/transform crs-transform)))))
-       
-       (transient {:table table-name :crs crs})
-       (.getProperties feature))))))
+            _ (try (.setCharset store (java.nio.charset.StandardCharsets/UTF_8))   (catch Exception e))]
+        (try
+          (set (.getTypeNames store))
+          (finally (.close geopackage))))
+      (with-open [conn (jdbc/get-connection (format "jdbc:sqlite:%s"
+                                                    (.getCanonicalPath file)))]
+        (jdbc/with-transaction [tx conn]
+          (let [q (if include-system?
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','view') 
+                     AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'gpkg_%'
+                     AND name NOT LIKE 'rtree_%'")]
+            (->> (jdbc/execute! tx [q])
+                 (map :sqlite_master/name)
+                 (set))))))))
 
 (defn- ->crs [x]
   (cond (string? x) (CRS/decode x true)
         (integer? x) (CRS/decode (str "EPSG:" x) true)
         :else (throw (IllegalArgumentException. (str "Unknown type of CRS " x)))))
+
+
+(defn- gpkg-iterator [source table-name crs crs-transform key-transform]
+  (let [features (-> source
+                     (.getFeatures)
+                     (.features))]
+    (reify
+      java.util.Iterator
+      (next [_]
+        (let [feature (.next features)
+              geometry-property-name (.getName
+                                      (.getDefaultGeometryProperty feature))]
+          (f/map->Feature
+           (persistent!
+            (reduce
+             (fn [out property]
+               (let [is-geometry (= (.getName property) geometry-property-name)]
+                 (assoc! out
+                         (if is-geometry :geometry
+                             (key-transform (.getLocalPart (.getName property))))
+                         (cond-> (.getValue property)
+                           (and is-geometry crs-transform)
+                           (JTS/transform crs-transform)))))
+
+             (transient {:table table-name :crs crs})
+             (.getProperties feature))))))
+
+      (hasNext [_] (.hasNext features))
+
+      java.io.Closeable
+      (close [_] (.close features)))))
+
+(defn- sqlite-iterator
+  [^java.io.File file ^String table key-transform]
+  (let [ds   (jdbc/get-datasource
+              (format "jdbc:sqlite:%s"
+                      (.getCanonicalPath file)))
+
+        ;; unfortunately next.jdbc is not suitable
+        ;; for streaming results as a lazy seq
+        conn ^java.sql.Connection (jdbc/get-connection ds)
+        stmt ^java.sql.Statement  (.createStatement conn)
+        rs   ^java.sql.ResultSet  (.executeQuery
+                                   stmt
+                                   (format "SELECT * FROM \"%s\"" table))
+        md   ^java.sql.ResultSetMetaData (.getMetaData rs)
+        cols (vec (for [i (range 1 (inc (.getColumnCount md)))]
+                    [i (.getColumnName md i)]))
+        has-next (atom true)]
+    (reify
+      java.util.Iterator
+      (next [_]
+        (reset! has-next (.next rs))
+        (when @has-next
+          (f/map->Feature
+           (persistent!
+            (reduce
+             (fn [a [^int i ^String n]] (assoc! a (key-transform n) (.getObject rs i)))
+             (transient {:table table})
+             cols)))))
+
+      (hasNext [_] @has-next)
+
+      java.io.Closeable
+      (close [_]
+        (.close rs)
+        (.close stmt)
+        (.close conn)))))
 
 (defn open 
   "The result of gpkg/open is a lazy sequence that is also closeable.
@@ -85,7 +159,7 @@
    pass a GeometryFactory with a PrecisionModel set. If you do 
    not know the precision of the geometries, but want them to be
    of a certain precision, use core/change-precision instead."
-  [gpkg & {:keys [table-name to-crs key-transform geometry-factory]
+  [gpkg & {:keys [table-name to-crs key-transform geometry-factory spatial-only?]
                     :or {key-transform identity
                          geometry-factory g/*factory*}}]
   (assert (.exists (io/as-file gpkg)))
@@ -95,15 +169,13 @@
 
         _ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
         _ (try (.setCharset store (java.nio.charset.StandardCharsets/UTF_8))   (catch Exception e))
-        
+
         tables (if table-name
                  [table-name]
-                 (into [] (.getTypeNames store)))
+                 (into [] (table-names gpkg :spatial-only? spatial-only?)))
 
         state (volatile! {:table nil
                           :tables tables
-                          :crs nil
-                          :transform nil
                           :iterator nil
                           :closed false})
 
@@ -112,45 +184,48 @@
           (when (:closed state) (throw (ex-info "Iterating on a geopackage that has been closed" {:input gpkg :state state})))
           (if (and iterator (.hasNext iterator))
             state ;; just continue with this iterator
-            
+
             (if (seq tables) ;; there are more tables, start next table
               (let [[table & tables] tables
-                    source (.getFeatureSource store table)
-                    new-iterator (-> source
-                                     (.getFeatures)
-                                     (.features))
-                    crs (-> source .getInfo .getCRS (CRS/lookupIdentifier true))]
+                    source (try
+                             (.getFeatureSource store table)
+                             (catch Exception e
+                               (if (re-find #"Schema '.+' does not exist." (.getMessage e))
+                                 nil
+                                 (throw e))))]
                 (when iterator (.close iterator))
-                (assoc state
-                       :table table
-                       :tables tables
-                       :transform (when to-crs
-                                    (let [from-crs (->crs crs)
-                                          to-crs (->crs to-crs)]
-                                      (CRS/findMathTransform from-crs to-crs true)))
-                       :crs crs
-                       :iterator new-iterator))
+                (if source
+                  ;; spatial table
+                  (let [crs (-> source .getInfo .getCRS (CRS/lookupIdentifier true))
+                        crs-transform (when to-crs
+                                        (let [from-crs (->crs crs)
+                                              to-crs (->crs to-crs)]
+                                          (CRS/findMathTransform from-crs to-crs true)))]
+                    (assoc state
+                           :table table
+                           :tables tables
+                           :iterator (gpkg-iterator source table crs crs-transform key-transform)))
+                  ;; non-spatial table
+                  (assoc state
+                         :table table
+                         :tables tables
+                         :iterator (sqlite-iterator gpkg table key-transform))))
 
               ;; reached the end
               (do
                 (when iterator (.close iterator))
-                {:table nil :tables nil :crs nil :iterator nil :closed false}))))
+                {:table nil :tables nil :iterator nil :closed false}))))
 
         ;; we don't thread state through here because we want to handle close
         feature-seq
         (fn feature-seq []
           (lazy-seq
            (let [state (vswap! state maybe-advance!)]
-             (if (:iterator state)
-               (cons (->feature key-transform
-                                (:transform state)
-                                (.next (:iterator state))
-                                (:table state)
-                                (:crs state))
+             (when (:iterator state)
+               (cons (.next (:iterator state))
                      (feature-seq))))))
 
-        feature-seq (keep identity (feature-seq))
-        ]
+        feature-seq (keep identity (feature-seq))]
     
     (reify
       java.lang.AutoCloseable
@@ -162,7 +237,7 @@
         (.dispose store))
 
       ;; these are a bit immoral in that the returned
-      ;; object closes its closability. but this will be OK
+      ;; object loses its closability. but this will be OK
       ;; for the main pattern of (with-open [x ...] (dothings x))
       clojure.lang.ISeq
       (first [_] (.first feature-seq))
@@ -332,30 +407,69 @@
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [features      (reductions (fn [_ x] x) features)
            spec          (vec (or schema (infer-spec (first features))))
-           getters       (mapv (fn [[k v]]
-                                 (:accessor v #(get % k)))
-                               spec)
-           feature-entry (->feature-entry table-name spec)
-           [_ {:keys [srid]}]          (spec-geom-field spec)]
-         (.setBounds feature-entry
-                     (ReferencedEnvelope. 0 0 0 0 (CRS/decode (str "EPSG:" srid))))
-         (try
-           (.create geopackage feature-entry (->geotools-schema table-name spec))
-           (catch java.lang.IllegalArgumentException _))
+           [geom-field {:keys [srid]}]          (spec-geom-field spec)]
+       (if geom-field
+         ;; spatial data:
+         (let [getters       (mapv (fn [[k v]]
+                                     (:accessor v #(get % k)))
+                                   spec)
+               feature-entry (->feature-entry table-name spec)]
+           (.setBounds feature-entry
+                       (ReferencedEnvelope. 0 0 0 0 (CRS/decode (str "EPSG:" srid))))
+           (try
+             (.create geopackage feature-entry (->geotools-schema table-name spec))
+             (catch java.lang.IllegalArgumentException _))
 
-         ;; TODO should we have a transaction around the whole lot?
-         (with-open [tx (DefaultTransaction.)]
-           (try 
-             (with-open [writer (.writer geopackage feature-entry true nil tx)]
-               (run!
-                (fn [feature]
-                  (.setAttributes
-                   (.next writer)
-                   (mapv (fn [getter] (getter feature)) getters))
-                  (.write writer))
-                features))
-             
-             (.commit tx)
-             (catch Exception e (.rollback tx) (throw e))))))))
+           ;; TODO should we have a transaction around the whole lot?
+           (with-open [tx (DefaultTransaction.)]
+             (try
+               (with-open [writer (.writer geopackage feature-entry true nil tx)]
+                 (run!
+                  (fn [feature]
+                    (.setAttributes
+                     (.next writer)
+                     (mapv (fn [getter] (getter feature)) getters))
+                    (.write writer))
+                  features))
+
+               (.commit tx)
+               (catch Exception e (.rollback tx) (throw e)))))
+         
+         ;; non-spatial data:
+         (let [quote-name (fn [s] (str "\"" (name s) "\""))
+
+               col-types (string/join
+                          ","
+                          (for [[col {col-type :type}] spec]
+                            (str (quote-name col) " "
+                                 (cond
+                                   (#{:integer :short :long Integer Short Long} col-type) "INTEGER"
+                                   (#{:double :float Double Float} col-type) "REAL"
+                                   (#{:boolean Boolean} col-type) "BOOLEAN"
+                                   :else "TEXT"))))
+
+               table-stmt (format "CREATE TABLE IF NOT EXISTS \"%s\" (%s);"
+                                  table-name col-types)
+
+               cols (mapv (comp name first) spec)
+
+               insert-stmt (format "INSERT INTO \"%s\" (%s) values (%s)"
+                                   table-name
+                                   (string/join ", " (map quote-name cols))
+                                   (string/join ", " (repeat (count cols) "?")))]
+
+           (with-open [conn (jdbc/get-connection (format "jdbc:sqlite:%s"
+                                                         (.getCanonicalPath file)))]
+             (jdbc/with-transaction [tx conn]
+               (jdbc/execute! tx [table-stmt])
+               (jdbc/execute-batch!
+                tx
+                insert-stmt
+                (for [feature features]
+                  (for [[col {accessor :accessor}] spec]
+                    (if (nil? accessor)
+                      (get feature col)
+                      (accessor feature))))
+                {:batch-size batch-insert-size})))))))))
 
 
