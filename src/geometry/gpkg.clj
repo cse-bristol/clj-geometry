@@ -1,5 +1,6 @@
 (ns geometry.gpkg
-  "Functions for reading and writing geopackages.
+  "Functions for reading and writing geopackages or non-spatial
+   sqlite tables.
 
   For example
 
@@ -19,8 +20,9 @@
       (gpkg/write output-file output-table
          (for [feature h] (assoc feature :foo 1))))
 
-  this will infer the columns & geometry on the output features
-  which probably isn't good for production use. In that case you
+  this will infer the columns & geometry on the output features,
+  which should be avoided in production, as it won't work properly
+  if any columns have null values in the first row. In that case you
   will do well to supply the :schema argument to write.
   "
   
