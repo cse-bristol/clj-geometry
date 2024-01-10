@@ -369,6 +369,18 @@
     (= :point type) Geometries/POINT
     (= :polygon type) Geometries/POLYGON
 
+    (= :integer type) (.getCanonicalName Integer)
+    (= :int type) (.getCanonicalName Integer)
+    (= :long type) (.getCanonicalName Long)
+    (= :short type) (.getCanonicalName Short)
+    (= :float type) (.getCanonicalName Float)
+    (= :double type) (.getCanonicalName Double)
+    (= :real type) (.getCanonicalName Double)
+    (= :string type) (.getCanonicalName String)
+    (= :boolean type) (.getCanonicalName Boolean)
+
+    (keyword? type) (.getCanonicalName String)
+
     :else type))
 
 (defn- ->feature-entry [table-name spec]
@@ -407,7 +419,7 @@
   ([file table-name features & {:keys [schema batch-insert-size]
                                 :or {batch-insert-size 4000}}]
    (with-open [geopackage (open-for-writing file batch-insert-size)]
-     (let [features      (if (seq features) (reductions (fn [_ x] x) features) [])
+     (let [features      features
            spec          (vec (or schema (infer-spec (first features))))
            [geom-field {:keys [srid]}]          (spec-geom-field spec)]
        (if geom-field
@@ -444,9 +456,10 @@
                           ","
                           (for [[col {col-type :type}] spec]
                             (str (quote-name col) " "
+                                 ;; handled values should match ->geotools-type (except for geometric types):
                                  (cond
-                                   (#{:integer :short :long Integer Short Long} col-type) "INTEGER"
-                                   (#{:double :float Double Float} col-type) "REAL"
+                                   (#{:int :integer :short :long Integer Short Long} col-type) "INTEGER"
+                                   (#{:double :float :real Double Float} col-type) "REAL"
                                    (#{:boolean Boolean} col-type) "BOOLEAN"
                                    :else "TEXT"))))
 
