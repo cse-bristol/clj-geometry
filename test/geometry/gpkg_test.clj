@@ -104,6 +104,32 @@
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
 
+(t/deftest test-empty-read-writes
+  (let [f (.toFile (java.nio.file.Files/createTempFile
+                    "test-read-write" ".gpkg"
+                    (into-array java.nio.file.attribute.FileAttribute [])))]
+    (try
+      ;; write some features down
+      (sut/write f "test-table" []
+       :schema
+       {"geometry" {:type :point :srid 27700}
+        "id" {:type Integer}})
+      
+      ;; write some non-spatial data:
+      (sut/write f "data-table" []
+       :schema
+       {"a" {:type Integer :accessor :a}
+        "b" {:type String}
+        "c" {:type Boolean :accessor :c}
+        "inf" {:type :double :accessor :inf}})
+
+      (with-open [in (sut/open f :spatial-only? false :key-transform keyword)]
+        (t/is (= []
+                 (vec (map #(into {} %) in)))))
+            
+      (catch Exception e (prn e) (throw e))
+      (finally (io/delete-file f)))))
+
 (t/deftest test-table-names
  (let [f (.toFile (java.nio.file.Files/createTempFile
                     "test-read-write" ".gpkg"

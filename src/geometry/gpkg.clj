@@ -87,23 +87,23 @@
     (reify
       java.util.Iterator
       (next [_]
-        (let [feature (.next features)
-              geometry-property-name (.getName
-                                      (.getDefaultGeometryProperty feature))]
-          (f/map->Feature
-           (persistent!
-            (reduce
-             (fn [out property]
-               (let [is-geometry (= (.getName property) geometry-property-name)]
-                 (assoc! out
-                         (if is-geometry :geometry
-                             (key-transform (.getLocalPart (.getName property))))
-                         (cond-> (.getValue property)
-                           (and is-geometry crs-transform)
-                           (JTS/transform crs-transform)))))
+        (when-let [feature (when (.hasNext features) (.next features))]
+          (let [geometry-property-name (.getName
+                                        (.getDefaultGeometryProperty feature))]
+            (f/map->Feature
+             (persistent!
+              (reduce
+               (fn [out property]
+                 (let [is-geometry (= (.getName property) geometry-property-name)]
+                   (assoc! out
+                           (if is-geometry :geometry
+                               (key-transform (.getLocalPart (.getName property))))
+                           (cond-> (.getValue property)
+                             (and is-geometry crs-transform)
+                             (JTS/transform crs-transform)))))
 
-             (transient {:table table-name :crs crs})
-             (.getProperties feature))))))
+               (transient {:table table-name :crs crs})
+               (.getProperties feature)))))))
 
       (hasNext [_] (.hasNext features))
 
@@ -407,7 +407,7 @@
   ([file table-name features & {:keys [schema batch-insert-size]
                                 :or {batch-insert-size 4000}}]
    (with-open [geopackage (open-for-writing file batch-insert-size)]
-     (let [features      (reductions (fn [_ x] x) features)
+     (let [features      (if (seq features) (reductions (fn [_ x] x) features) [])
            spec          (vec (or schema (infer-spec (first features))))
            [geom-field {:keys [srid]}]          (spec-geom-field spec)]
        (if geom-field
