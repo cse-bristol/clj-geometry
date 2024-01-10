@@ -80,7 +80,12 @@
         :else (throw (IllegalArgumentException. (str "Unknown type of CRS " x)))))
 
 
-(defn- gpkg-iterator [source table-name crs crs-transform key-transform]
+(defn- gpkg-iterator 
+  "Returns a Closable Iterator over a geotools FeatureIterator
+   for the features in the table.
+   
+   Internal implementation detail of gpkg/open."
+  [source table-name crs crs-transform key-transform]
   (let [features (-> source
                      (.getFeatures)
                      (.features))]
@@ -111,6 +116,10 @@
       (close [_] (.close features)))))
 
 (defn- sqlite-iterator
+  "Returns a Closable Iterator over a ResultSet containing all
+   the rows and columns in the table.
+   
+   Internal implementation detail of gpkg/open."
   [^java.io.File file ^String table key-transform]
   (let [ds   (jdbc/get-datasource
               (format "jdbc:sqlite:%s"
@@ -313,6 +322,7 @@
         (throw (ex-info "Unable to infer schema for value" {:value feature}))))
 
 (def ^:private sqlite-config
+  "SQLite config, optimised for write speed."
   (doto (SQLiteConfig.)
     (.setJournalMode SQLiteConfig$JournalMode/WAL)
     (.setPragma SQLiteConfig$Pragma/SYNCHRONOUS "OFF")
@@ -323,7 +333,11 @@
                 (str (* 1024 1024 1024)) ;; 1G
                 )))
 
-(defn- open-for-writing [file batch-insert-size]
+(defn- open-for-writing 
+  "Open a gpkg for writing spatial data via the geotools APIs.
+   
+   Also sets the batch insert size (via reflection)."
+  [file batch-insert-size]
   (let [geopackage (GeoPackage. (io/as-file file) sqlite-config nil)]
     (.init geopackage)
     (let [m (.getDeclaredMethod GeoPackage "dataStore" nil)]
@@ -332,9 +346,11 @@
         (.setBatchInsertSize ds batch-insert-size)))
     geopackage))
 
-(defn- spec-geom-field [spec]
+(defn- spec-geom-field 
+  "Get the spec for the (first) geometry field from a schema."
+  [spec]
   (first (filter
-          (fn [[k {:keys [type]}]]
+          (fn [[_ {:keys [type]}]]
             (or
              (= Geometries/GEOMETRY type)
              (= Geometries/GEOMETRYCOLLECTION type)
@@ -355,7 +371,10 @@
              (= :polygon type)))
           spec)))
 
-(defn- ->geotools-type [type]
+(defn- ->geotools-type 
+  "Convert a type specification from a schema into something that geotools can understand
+   as a column type."
+  [type]
   (cond
     (class? type)  (.getCanonicalName type)
     (string? type) type
@@ -383,14 +402,18 @@
 
     :else type))
 
-(defn- ->feature-entry [table-name spec]
+(defn- ->feature-entry 
+  "Create a geotools FeatureEntry (for our purposes a gpkg table definition)"
+  [table-name spec]
   (let [geom-col (spec-geom-field spec)]
     (doto (FeatureEntry.)
       (.setTableName table-name)
       (.setGeometryColumn (first geom-col))
       (.setGeometryType (->geotools-type (:type (second geom-col)))))))
 
-(defn- ->geotools-schema [table-name spec]
+(defn- ->geotools-schema 
+  "Create a geotools schema that defines the columns of a gpkg table."
+  [table-name spec]
   (DataUtilities/createType
    table-name
    (string/join ","
@@ -419,9 +442,8 @@
   ([file table-name features & {:keys [schema batch-insert-size]
                                 :or {batch-insert-size 4000}}]
    (with-open [geopackage (open-for-writing file batch-insert-size)]
-     (let [features      features
-           spec          (vec (or schema (infer-spec (first features))))
-           [geom-field {:keys [srid]}]          (spec-geom-field spec)]
+     (let [spec (vec (or schema (infer-spec (first features))))
+           [geom-field {:keys [srid]}] (spec-geom-field spec)]
        (if geom-field
          ;; spatial data:
          (let [getters       (mapv (fn [[k v]]
@@ -473,8 +495,10 @@
                                    (string/join ", " (map quote-name cols))
                                    (string/join ", " (repeat (count cols) "?")))]
 
-           (with-open [conn (jdbc/get-connection (format "jdbc:sqlite:%s"
-                                                         (.getCanonicalPath (io/as-file file))))]
+           ;; have to make the connection manually so that SQLite config can be passed:
+           (with-open [conn (org.sqlite.JDBC/createConnection (format "jdbc:sqlite:%s"
+                                                                      (.getCanonicalPath (io/as-file file)))
+                                                              (.toProperties sqlite-config))]
              (jdbc/with-transaction [tx conn]
                (jdbc/execute! tx [table-stmt])
                (jdbc/execute-batch!
