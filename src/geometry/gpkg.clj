@@ -28,23 +28,25 @@
   
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
-            [geometry.feature :as f]
             [geometry.core :as g]
-            [taoensso.timbre :as log]
-            [next.jdbc :as jdbc])
-  (:import [org.opengis.feature.simple SimpleFeature]
-           [org.opengis.referencing.operation MathTransform]
-           [org.geotools.data DataStoreFinder DataUtilities DefaultTransaction]
-           [org.geotools.geometry.jts JTS Geometries ReferencedEnvelope]
-           [org.locationtech.jts.geom Geometry]
+            [geometry.feature :as f]
+            [next.jdbc :as jdbc]
+            [taoensso.timbre :as log])
+  (:import [org.geotools.data DataStoreFinder DataUtilities DefaultTransaction]
+           [org.geotools.feature.simple SimpleFeatureImpl]
+           [org.geotools.feature.simple SimpleFeatureImpl$Attribute]
+           [org.geotools.geometry.jts Geometries JTS ReferencedEnvelope]
+           [org.geotools.geopkg FeatureEntry GeoPackage]
+           [org.geotools.jdbc JDBCDataStore JDBCFeatureStore]
            [org.geotools.referencing CRS]
-           [org.geotools.geopkg GeoPackage FeatureEntry]
+           [org.locationtech.jts.geom Geometry]
+           [org.opengis.referencing.operation MathTransform]
+           [org.geotools.jdbc JDBCFeatureReader$ResultSetFeature]
            [org.sqlite
             SQLiteConfig
             SQLiteConfig$JournalMode
             SQLiteConfig$Pragma
-            SQLiteConfig$TransactionMode
-            SQLiteConfig$LockingMode]))
+            SQLiteConfig$TransactionMode]))
 
 (defn table-names
   "Get the tables present in the geopackage or sqlite database, as a
@@ -56,9 +58,7 @@
       (let [geopackage (GeoPackage. file)
             store (DataStoreFinder/getDataStore
                    {"dbtype" "geopkg"
-                    "database" (.getCanonicalPath (io/as-file file))})
-
-            _ (try (.setCharset store (java.nio.charset.StandardCharsets/UTF_8)) (catch Exception _))]
+                    "database" (.getCanonicalPath (io/as-file file))})]
         (try
           (set (.getTypeNames store))
           (finally (.close geopackage))))
@@ -80,32 +80,33 @@
         :else (throw (IllegalArgumentException. (str "Unknown type of CRS " x)))))
 
 
-(defn- gpkg-iterator 
+(defn- gpkg-iterator
   "Returns a Closable Iterator over a geotools FeatureIterator
    for the features in the table.
    
    Internal implementation detail of gpkg/open."
-  [source table-name crs crs-transform key-transform]
+  [^JDBCFeatureStore source table-name crs ^MathTransform crs-transform key-transform]
   (let [features (-> source
                      (.getFeatures)
                      (.features))]
     (reify
       java.util.Iterator
       (next [_]
-        (when-let [feature (when (.hasNext features) (.next features))]
+        (when-let [feature ^SimpleFeatureImpl (when (.hasNext features) (.next features))]
           (let [geometry-property-name (.getName
                                         (.getDefaultGeometryProperty feature))]
             (f/map->Feature
              (persistent!
               (reduce
-               (fn [out property]
+               (fn [out ^SimpleFeatureImpl$Attribute property]
                  (let [is-geometry (= (.getName property) geometry-property-name)]
                    (assoc! out
-                           (if is-geometry :geometry
-                               (key-transform (.getLocalPart (.getName property))))
-                           (cond-> (.getValue property)
-                             (and is-geometry crs-transform)
-                             (JTS/transform crs-transform)))))
+                           (if is-geometry
+                             :geometry
+                             (key-transform (.getLocalPart (.getName property))))
+                           (if (and is-geometry crs-transform)
+                             (JTS/transform ^Geometry (.getValue property) crs-transform)
+                             (.getValue property)))))
 
                (transient {:table table-name :crs crs})
                (.getProperties feature)))))))
@@ -174,12 +175,11 @@
                     :or {key-transform identity
                          geometry-factory g/*factory*}}]
   (assert (.exists (io/as-file gpkg)))
-  (let [store (DataStoreFinder/getDataStore
-               {"dbtype" "geopkg"
-                "database" (.getCanonicalPath (io/as-file gpkg))})
+  (let [store ^JDBCDataStore (DataStoreFinder/getDataStore
+                              {"dbtype" "geopkg"
+                               "database" (.getCanonicalPath (io/as-file gpkg))})
 
-        _ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
-        _ (try (.setCharset store (java.nio.charset.StandardCharsets/UTF_8))   (catch Exception e))
+        _ (try (.setGeometryFactory store geometry-factory)                  (catch Exception e (log/warn e)))
 
         tables (if table-name
                  [table-name]
@@ -191,19 +191,19 @@
                           :closed false})
 
         maybe-advance!
-        (fn [{:keys [iterator tables] :as state}]
+        (fn [{:keys [^java.util.Iterator iterator tables] :as state}]
           (when (:closed state) (throw (ex-info "Iterating on a geopackage that has been closed" {:input gpkg :state state})))
           (if (and iterator (.hasNext iterator))
             state ;; just continue with this iterator
 
             (if (seq tables) ;; there are more tables, start next table
-              (let [[table & tables] tables
-                    source (try
-                             (.getFeatureSource store table)
-                             (catch Exception e
-                               (if (re-find #"Schema '.+' does not exist." (.getMessage e))
-                                 nil
-                                 (throw e))))]
+              (let [[^String table & tables] tables
+                    source ^JDBCFeatureStore (try
+                                               (.getFeatureSource store table)
+                                               (catch Exception e
+                                                 (if (re-find #"Schema '.+' does not exist." (.getMessage e))
+                                                   nil
+                                                   (throw e))))]
                 (when iterator (.close iterator))
                 (if source
                   ;; spatial table
@@ -232,18 +232,18 @@
         (fn feature-seq []
           (lazy-seq
            (let [state (vswap! state maybe-advance!)]
-             (when (:iterator state)
-               (cons (.next (:iterator state))
+             (when-let [^java.util.Iterator iterator (:iterator state)]
+               (cons (.next iterator)
                      (feature-seq))))))
 
-        feature-seq (keep identity (feature-seq))]
+        feature-seq ^clojure.lang.ISeq (keep identity (feature-seq))]
     
     (reify
       java.lang.AutoCloseable
       (close [_]
         ;; close feature iterator
         (vswap! state (fn [state]
-                        (when-let [i (:iterator state)] (.close i))
+                        (when-let [^java.io.Closeable i (:iterator state)] (.close i))
                         (assoc state :iterator nil :closed true)))
         (.dispose store))
 
@@ -321,7 +321,7 @@
         :else
         (throw (ex-info "Unable to infer schema for value" {:value feature}))))
 
-(def ^:private sqlite-config
+(def ^:private ^SQLiteConfig sqlite-config
   "SQLite config, optimised for write speed."
   (doto (SQLiteConfig.)
     (.setJournalMode SQLiteConfig$JournalMode/WAL)
@@ -337,7 +337,7 @@
   "Open a gpkg for writing spatial data via the geotools APIs.
    
    Also sets the batch insert size (via reflection)."
-  [file batch-insert-size]
+  ^GeoPackage [file batch-insert-size]
   (let [geopackage (GeoPackage. (io/as-file file) sqlite-config nil)]
     (.init geopackage)
     (let [m (.getDeclaredMethod GeoPackage "dataStore" nil)]
@@ -376,7 +376,7 @@
    as a column type."
   [type]
   (cond
-    (class? type)  (.getCanonicalName type)
+    (class? type)  (.getCanonicalName ^Class type)
     (string? type) type
 
     (= :geometry type) Geometries/GEOMETRY
@@ -449,7 +449,7 @@
          (let [getters       (mapv (fn [[k v]]
                                      (:accessor v #(get % k)))
                                    spec)
-               feature-entry (->feature-entry table-name spec)]
+               feature-entry ^FeatureEntry (->feature-entry table-name spec)]
            (.setBounds feature-entry
                        (ReferencedEnvelope. 0 0 0 0 (CRS/decode (str "EPSG:" srid))))
            (try
@@ -462,9 +462,10 @@
                (with-open [writer (.writer geopackage feature-entry true nil tx)]
                  (run!
                   (fn [feature]
-                    (.setAttributes
-                     (.next writer)
-                     (mapv (fn [getter] (getter feature)) getters))
+                    (let [n ^JDBCFeatureReader$ResultSetFeature (.next writer)]
+                      (.setAttributes
+                       n
+                       ^java.util.List (mapv (fn [getter] (getter feature)) getters)))
                     (.write writer))
                   features))
 
