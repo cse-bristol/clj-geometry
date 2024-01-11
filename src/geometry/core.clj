@@ -31,7 +31,7 @@
     Coordinate Geometry GeometryFactory LineString Point Polygon
     PrecisionModel]))
 
-(def ^:private patched-csf
+(def ^:private ^org.locationtech.jts.geom.CoordinateSequenceFactory patched-csf
   "This amended coordinate sequence factory is required so we get
   the right type of coordinate object out; otherwise some code paths
   produce CoordinateXY, which breaks things in parts of jts"
@@ -233,18 +233,20 @@
 
 (defn buffer
   ([g ^double r]
-   (.buffer (geometry g) (double r)))
+   (update-geometry g (.buffer (geometry g) (double r))))
 
   ([g r quad-segs end-cap-style join-style]
    (buffer g r quad-segs end-cap-style join-style 5.0))
 
   ([g r quad-segs end-cap-style join-style mitre-limit]
-   (BufferOp/bufferOp (geometry g)
-                      (double r)
-                      (BufferParameters. quad-segs
-                                         (end-cap-styles end-cap-style)
-                                         (join-styles join-style)
-                                         mitre-limit))))
+   (update-geometry
+    g
+    (BufferOp/bufferOp (geometry g)
+                       (double r)
+                       (BufferParameters. quad-segs
+                                          (end-cap-styles end-cap-style)
+                                          (join-styles join-style)
+                                          mitre-limit)))))
 
 (defn length ^double [g] (.getLength (geometry g)))
 (defn area ^double [g] (.getArea (geometry g)))
@@ -283,7 +285,9 @@
   [g] 
   (update-geometry g (.getCentroid (geometry g))))
 
-(defn boundary-of [g] (.getBoundary (geometry g)))
+(defn boundary-of 
+  "See https://locationtech.github.io/jts/javadoc/org/locationtech/jts/geom/Geometry.html#getBoundary--"
+  [g] (.getBoundary (geometry g)))
 
 (defn to-boundary 
   "If `g` is a feature, return a feature with the boundary as the geometry.
@@ -318,10 +322,6 @@
   "See https://locationtech.github.io/jts/javadoc/org/locationtech/jts/algorithm/MinimumBoundingCircle.html"
   [g]
   (MinimumBoundingCircle. (geometry g)))
-
-(defn boundary-of
-  "See https://locationtech.github.io/jts/javadoc/org/locationtech/jts/geom/Geometry.html#getBoundary--"
-  [g] (.getBoundary (geometry g)))
 
 (defn geometries
   "Get a collection of the contained geometries within g;
@@ -377,7 +377,7 @@
 (defn holes-of [g]
   (->> (polygons (geometry g))
        (mapcat
-        (fn [^Geometry geom]
+        (fn [^Polygon geom]
           (for [i (range (.getNumInteriorRing geom))]
             (make-polygon (.getCoordinates (.getInteriorRingN geom i))))))
        (filter identity)))
@@ -401,7 +401,10 @@
      (.reduce gpr (geometry g)))))
 
 (defn set-user-data!
-  "Mutates the user-data in the geometry associated with x"
+  "Mutates the user-data in the geometry associated with x.
+   Consider using a Feature instead unless a JTS API you are using means there
+   is no other way of passing data alongside a geometry (for example, this is
+   the case in the noder)"
   [g x]
   (let [g' (geometry g)]
     (.setUserData g' x)
@@ -434,8 +437,10 @@
   [line point]
   (let [line (geometry line)
         point (geometry point)
-        [gl _] (.nearestLocations
-                (org.locationtech.jts.operation.distance.DistanceOp. line point))
+        [^org.locationtech.jts.operation.distance.GeometryLocation gl _]
+        (.nearestLocations
+         (org.locationtech.jts.operation.distance.DistanceOp. line point))
+        
         coordinates (.getCoordinates line)
         split-position (.getSegmentIndex gl)
         split-coordinate (.getCoordinate point)
@@ -454,7 +459,7 @@
    use a scale factor of 1000.
    To specify -3 decimal places of precision (i.e. rounding to
    the nearest 1000), use a scale factor of 0.001."
-  [paths snapping-scale-factor]
+  ^Geometry [paths snapping-scale-factor]
   (let [paths (map geometry paths)
         pm (new PrecisionModel (float snapping-scale-factor))
         noder (new SnapRoundingNoder pm)
