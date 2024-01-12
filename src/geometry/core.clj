@@ -56,6 +56,9 @@
        [_ ^int size ^int dimension ^int measures]
        (.create csf size (int 3) measures)))))
 
+(defn fixed-precision-model ^PrecisionModel [cm-precision]
+  (PrecisionModel. (float (/ 100.0 cm-precision))))
+
 (defn geometry-factory [& {:keys [cm-precision srid] :or {srid 27700}}]
   (if cm-precision
     (GeometryFactory. (PrecisionModel. (float (/ 100.0 cm-precision)))

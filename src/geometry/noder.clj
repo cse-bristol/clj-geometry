@@ -15,11 +15,11 @@
   Returns a seq of linestrings, whose userdata will be maps having the key ::lines
   which indicates the members of linear-features that went in."
   [linear-features
-   & {:keys [get-meta merge-meta precision-model]
+   & {:keys [get-meta merge-meta cm-precision]
       :or {get-meta   (fn [x] {::lines [x]})
            merge-meta (fn [xs ys] {::lines (into (::lines xs) (::lines ys))})
-           precision-model (.getPrecisionModel g/*factory*)}}]
-  (let [noder (SnapRoundingNoder. precision-model)
+           cm-precision 10}}]
+  (let [noder (SnapRoundingNoder. (g/fixed-precision-model cm-precision))
         
         _ (.computeNodes
            noder
@@ -48,11 +48,13 @@
   Lines from the input set of lines have user-data with ::lines [input lines];
   some of these may be splits or joins of input lines.
   "
-  [linear-features other-features]
+  [linear-features other-features & {:keys [cm-precision]
+                                     :or {cm-precision 10}}]
   
   (let [linear-features (node linear-features
                               :get-meta (fn [x] {::lines [x]})
-                              :merge-meta (fn [x y] (merge-with into x y)))
+                              :merge-meta (fn [x y] (merge-with into x y))
+                              :cm-precision cm-precision)
         
         index (i/create linear-features)
 
