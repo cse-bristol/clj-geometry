@@ -298,6 +298,9 @@
   [g] 
   (update-geometry g (.getBoundary (geometry g))))
 
+(defn interior-point-of ^Point [g]
+  (.getInteriorPoint (geometry g)))
+
 (defn bounding-box [g]
   (let [envelope (.getEnvelopeInternal (geometry g))]
     {:xmin (.getMinX envelope)

@@ -24,13 +24,14 @@
   Indexes are immutable persistent datastructures, so index/add and index/delete
   return a new index.
   "
-  (:import
-   [org.locationtech.jts.geom Geometry Envelope Coordinate]
-   [com.github.davidmoten.rtree2 RTree Entry]
-   [com.github.davidmoten.rtree2.geometry Geometries]
-   [com.github.davidmoten.rtree2.internal EntryDefault]
-   [org.locationtech.jts.geom.prep PreparedGeometryFactory])
-  (:require [geometry.core :as g]))
+  (:require [geometry.core :as g]
+            [geometry.grid :refer [make-grid]]
+            [geometry.core :as geom]
+            [geometry.index :as index])
+  (:import [com.github.davidmoten.rtree2 Entry RTree]
+           [com.github.davidmoten.rtree2.geometry Geometries]
+           [com.github.davidmoten.rtree2.internal EntryDefault]
+           [org.locationtech.jts.geom.prep PreparedGeometryFactory]))
 
 (defn- rtree-rectangle-bounds ^com.github.davidmoten.rtree2.geometry.Rectangle [g]
   (let [g (g/geometry g)
@@ -69,7 +70,12 @@
              (into []
                    (comp
                     (filter identity)
+                    (remove geom/empty-geom?)
                     (map #(new EntryDefault % (rtree-bounds %)))))))))
+
+(defn entries
+  [^RTree index]
+  (map #(.value %) (.entries index)))
 
 (defn neighbours
   "Find nearest indexed feature(s) using RTree.nearest() ref
@@ -97,14 +103,38 @@
            (sort-by (fn [^Entry x] (g/distance q (.value x))))
            (map (fn [^Entry e] (.value e)))))))
 
+(defn query
+  "Query the index for all elements whose envelope intersects the query's envelope,
+   or whose envelope is within `radius` of the query's envelope if `radius` is specified."
+  ([^RTree index query]
+   (let [b (rtree-rectangle-bounds query)]
+     (into []
+           (map (fn [^Entry e] (.value e)))
+           (.search index b))))
+  ([^RTree index query radius]
+   (let [b (rtree-rectangle-bounds query)]
+     (into []
+           (map (fn [^Entry e] (.value e)))
+           (.search index b radius)))))
+
+(defn- do-query
+  "Query an rtree.
+     
+     `index`: the rtree.
+     `q`: the query geometry.
+     `op`: the spatial comparison to perform when filtering matches."
+  [^RTree index q op]
+  (let [b (rtree-rectangle-bounds q)
+        matches (into [] (.search index b))
+        prepped (PreparedGeometryFactory/prepare (g/geometry q))]
+    (keep (fn [^Entry match]
+            (when (op prepped (.value match))
+              (.value match)))
+          matches)))
+
 (defmacro defquery [name doc op]
   `(defn ~name ~doc [^RTree index# query#]
-     (let [b# (rtree-rectangle-bounds query#)
-           matches# (into [] (.search index# b#))
-           prepped# (PreparedGeometryFactory/prepare (g/geometry query#))]
-       (keep (fn [^Entry e#]
-               (when (~op prepped# (.value e#)) (.value e#)))
-             matches#))))
+     (do-query index# query# ~op)))
 
 (defquery intersecting
   "Returns a seq of every element in the index that intersects with the query"
@@ -119,3 +149,6 @@
   "Returns a seq of every element in the index that is covered entirely by the query"
   #(.covers %1 (g/geometry %2)))
 
+(defquery centroid-intersecting
+  "Returns a seq of every element in the index whose centroid intersects with the query"
+  #(.intersects %1 (g/centroid-of (g/geometry %2))))

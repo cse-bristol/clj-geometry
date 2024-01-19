@@ -1,8 +1,14 @@
 (ns geometry.index-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is testing]]
             [geometry.core :as g]
             [geometry.index :as index])
   (:import [geometry.feature Feature]))
+
+(deftest test-create
+  (index/create [(g/read-wkt "POLYGON EMPTY")
+                 nil
+                 (g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")])
+  (is (= 1 1)))
 
 (deftest test-intersecting
   (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]
@@ -11,6 +17,20 @@
          (->> (index/intersecting (index/create [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
                                                  (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")])
                                   (g/read-wkt "POINT (5 5)"))
+              (mapv g/normalize)))))
+
+(deftest test-centroid-intersecting
+  (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]
+              (mapv g/read-wkt)
+              (mapv g/normalize))
+         (->> (index/centroid-intersecting (index/create [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
+                                                          (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")])
+                                           (g/read-wkt "POLYGON ((5 5, 6 5, 6 6, 5 6, 5 5))"))
+              (mapv g/normalize))))
+  (is (= []
+         (->> (index/centroid-intersecting (index/create [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
+                                                          (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")])
+                                           (g/read-wkt "POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))"))
               (mapv g/normalize)))))
 
 (deftest test-intersecting-with-feature

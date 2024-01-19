@@ -179,7 +179,7 @@
                               {"dbtype" "geopkg"
                                "database" (.getCanonicalPath (io/as-file gpkg))})
 
-        _ (try (.setGeometryFactory store geometry-factory)                  (catch Exception e (log/warn e)))
+        _ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
 
         tables (if table-name
                  [table-name]
