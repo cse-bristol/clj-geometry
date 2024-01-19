@@ -29,7 +29,8 @@
   (:import [com.github.davidmoten.rtree2 Entry RTree]
            [com.github.davidmoten.rtree2.geometry Geometries]
            [com.github.davidmoten.rtree2.internal EntryDefault]
-           [org.locationtech.jts.geom.prep PreparedGeometryFactory]))
+           [org.locationtech.jts.geom.prep PreparedGeometryFactory]
+           [org.locationtech.jts.geom Geometry]))
 
 (defn- rtree-rectangle-bounds ^com.github.davidmoten.rtree2.geometry.Rectangle [g]
   (let [g (g/geometry g)

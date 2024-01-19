@@ -1,6 +1,7 @@
 (ns geometry.grid
   (:require [geometry.core :as geometry])
-  (:import [org.geotools.feature FeatureIterator]))
+  (:import [org.geotools.feature FeatureIterator]
+           [org.locationtech.jts.geom Geometry]))
 
 (defn make-grid
   "Make a grid of square polygons with height and width `dimension` covering
