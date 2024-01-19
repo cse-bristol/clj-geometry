@@ -25,8 +25,6 @@
   return a new index.
   "
   (:require [geometry.core :as g]
-            [geometry.grid :refer [make-grid]]
-            [geometry.core :as geom]
             [geometry.index :as index])
   (:import [com.github.davidmoten.rtree2 Entry RTree]
            [com.github.davidmoten.rtree2.geometry Geometries]
@@ -70,7 +68,7 @@
              (into []
                    (comp
                     (filter identity)
-                    (remove geom/empty-geom?)
+                    (remove g/empty-geom?)
                     (map #(new EntryDefault % (rtree-bounds %)))))))))
 
 (defn entries
