@@ -438,12 +438,15 @@
   :type is the canonical name of a java class, or just :String, or Geometries/GEOMETRY.
 
   Look at `infer-spec` for examples.
+   
+   Returns nil.
   "
   ([file table-name features & {:keys [schema batch-insert-size]
                                 :or {batch-insert-size 4000}}]
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [spec (vec (or schema (infer-spec (first features))))
-           [geom-field {:keys [srid]}] (spec-geom-field spec)]
+           [geom-field {:keys [srid]
+                        :or   {srid 27700}}] (spec-geom-field spec)]
        (if geom-field
          ;; spatial data:
          (let [getters       (mapv (fn [[k v]]
@@ -471,7 +474,7 @@
 
                (.commit tx)
                (catch Exception e (.rollback tx) (throw e)))))
-         
+
          ;; non-spatial data:
          (let [quote-name (fn [s] (str "\"" (name s) "\""))
 
@@ -510,6 +513,7 @@
                     (if (nil? accessor)
                       (get feature col)
                       (accessor feature))))
-                {:batch-size batch-insert-size})))))))))
+                {:batch-size batch-insert-size})))))
+       nil))))
 
 
