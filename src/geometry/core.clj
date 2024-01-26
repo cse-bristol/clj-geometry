@@ -79,7 +79,7 @@
 
 ;; protocol for things with geometry
 (defprotocol HasGeometry
-  (geometry ^Geometry [g])
+  (geometry ^org.locationtech.jts.geom.Geometry [g])
   (update-geometry [x g]))
 
 (declare read-wkt)
