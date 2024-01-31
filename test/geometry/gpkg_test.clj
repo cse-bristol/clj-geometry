@@ -17,7 +17,8 @@
        "test-table"
        
        [{"geometry" (g/make-point 1 2) "id" 1 "b" "abc" :c true :inf ##Inf}
-        {"geometry" (g/make-point 4 5) "id" 2 "b" "def" :c false :inf ##Inf}]
+        {"geometry" (g/make-point 4 5) "id" 2 "b" "def" :c false :inf ##Inf}
+        {"geometry" nil "id" 3 "b" "ghi" :c false :inf ##Inf}]
 
        :schema
        {"geometry" {:type :point :srid 27700}
@@ -30,7 +31,8 @@
       
       (with-open [in (sut/open f :table-name "test-table")]
         (t/is (= [{:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "abc" "c" 1 "inf" ##Inf}
-                  {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "def" "c" 0 "inf" ##Inf}]
+                  {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "def" "c" 0 "inf" ##Inf}
+                  {:geometry nil "id" 3 :table "test-table" :crs "EPSG:27700" "b" "ghi" "c" 0 "inf" ##Inf}]
 
                  ;; we map into {} to strip off the feature type
                  ;; since we want to do a simple comparison here
