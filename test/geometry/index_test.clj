@@ -5,10 +5,12 @@
   (:import [geometry.feature Feature]))
 
 (deftest test-create
-  (index/create [(g/read-wkt "POLYGON EMPTY")
-                 nil
-                 (g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")])
-  (is (= 1 1)))
+  (let [idx
+        (index/create [(g/read-wkt "POLYGON EMPTY")
+                       nil
+                       (g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")])]
+    (is (= (vec (index/entries idx)) 
+           [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")]))))
 
 (deftest test-intersecting
   (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]
@@ -17,7 +19,12 @@
          (->> (index/intersecting (index/create [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
                                                  (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")])
                                   (g/read-wkt "POINT (5 5)"))
-              (mapv g/normalize)))))
+              (mapv g/normalize))))
+  (testing "Should return empty vector if query is an empty geom"
+    (is (= []
+           (index/intersecting (index/create [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
+                                              (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")])
+                               (g/read-wkt "POLYGON EMPTY"))))))
 
 (deftest test-centroid-intersecting
   (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]
@@ -104,4 +111,31 @@
                 (mapv g/read-wkt)
                 (mapv g/normalize))
            (->> (index/neighbours idx (g/read-wkt "POINT (5 5)") 100 1)
-                (mapv g/normalize))))))
+                (mapv g/normalize))))
+    
+    (testing "Should return empty vector if query is an empty geom"
+      (is (= []
+             (index/neighbours idx (g/read-wkt "POLYGON EMPTY") 100 1))))))
+
+(deftest test-query
+  (let [idx (index/create [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
+                           (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")])]
+    (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]
+                (mapv g/read-wkt)
+                (mapv g/normalize))
+           (->> (index/query idx (g/read-wkt "POINT (5 5)"))
+                (mapv g/normalize))))
+
+    (testing "Should return empty vector if query is an empty geom"
+      (is (= [] (index/query idx (g/read-wkt "POLYGON EMPTY")))))
+
+    (testing "Should work when a radius is given"
+      (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"
+                   "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))"]
+                  (mapv g/read-wkt)
+                  (mapv g/normalize))
+             (->> (index/query idx (g/read-wkt "POINT (5 5)") (inc (Math/sqrt 50)))
+                  (mapv g/normalize)))))
+
+    (testing "Should return empty vector if query is an empty geom and a radius is given"
+      (is (= [] (index/query idx (g/read-wkt "POLYGON EMPTY") 100))))))

@@ -91,30 +91,36 @@
    as entries are sorted by actual distance.
    "
   [^RTree index q range n]
-  (let [matches (into [] (.nearest index
-                                   (rtree-rectangle-bounds q)
-                                   (double range) (int n)))]
-    (if (= n 1)
-      (let [m (first matches)]
-        (and m [(.value ^Entry m)]))
+  (if (g/empty-geom? q)
+    []
+    (let [matches (into [] (.nearest index
+                                     (rtree-rectangle-bounds q)
+                                     (double range) (int n)))]
+      (if (= n 1)
+        (let [m (first matches)]
+          (and m [(.value ^Entry m)]))
 
-      (->> matches
-           (sort-by (fn [^Entry x] (g/distance q (.value x))))
-           (map (fn [^Entry e] (.value e)))))))
+        (->> matches
+             (sort-by (fn [^Entry x] (g/distance q (.value x))))
+             (map (fn [^Entry e] (.value e))))))))
 
 (defn query
   "Query the index for all elements whose envelope intersects the query's envelope,
    or whose envelope is within `radius` of the query's envelope if `radius` is specified."
   ([^RTree index query]
-   (let [b (rtree-rectangle-bounds query)]
-     (into []
-           (map (fn [^Entry e] (.value e)))
-           (.search index b))))
-  ([^RTree index query radius]
-   (let [b (rtree-rectangle-bounds query)]
-     (into []
-           (map (fn [^Entry e] (.value e)))
-           (.search index b radius)))))
+   (if (g/empty-geom? query)
+     []
+     (let [b (rtree-rectangle-bounds query)]
+       (into []
+             (map (fn [^Entry e] (.value e)))
+             (.search index b)))))
+  ([^RTree index query ^double radius]
+   (if (g/empty-geom? query)
+     []
+     (let [b (rtree-rectangle-bounds query)]
+       (into []
+             (map (fn [^Entry e] (.value e)))
+             (.search index b radius))))))
 
 (defn- do-query
   "Query an rtree.
@@ -123,13 +129,15 @@
      `q`: the query geometry.
      `op`: the spatial comparison to perform when filtering matches."
   [^RTree index q op]
-  (let [b (rtree-rectangle-bounds q)
-        matches (into [] (.search index b))
-        prepped (PreparedGeometryFactory/prepare (g/geometry q))]
-    (keep (fn [^Entry match]
-            (when (op prepped (.value match))
-              (.value match)))
-          matches)))
+  (if (g/empty-geom? q)
+    []
+    (let [b (rtree-rectangle-bounds q)
+          matches (into [] (.search index b))
+          prepped (PreparedGeometryFactory/prepare (g/geometry q))]
+      (keep (fn [^Entry match]
+              (when (op prepped (.value match))
+                (.value match)))
+            matches))))
 
 (defmacro defquery [name doc op]
   `(defn ~name ~doc [^RTree index# query#]
