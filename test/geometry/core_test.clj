@@ -1,6 +1,7 @@
 (ns geometry.core-test 
   (:require [clojure.test :refer [deftest is testing]]
-            [geometry.core :as geom]))
+            [geometry.core :as geom]
+            [geometry.feature :as f]))
 
 (defn- norm-all [gs]
   (map geom/normalize gs))
@@ -30,6 +31,10 @@
     ))
 
 (deftest polygons-test
+  (testing "preserve features"
+    (is (=
+         [(f/->Feature (geom/make-polygon [[0 0] [0 1] [1 1] [1 0] [0 0]]) "table" 27700)]
+         (geom/polygons (f/->Feature (geom/make-polygon [[0 0] [0 1] [1 1] [1 0] [0 0]]) "table" 27700)))))
   (testing "filters out non-polygons from geometry collections"
     (is (=
          [(geom/make-polygon [[0 0] [0 1] [1 1] [1 0] [0 0]])]

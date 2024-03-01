@@ -1,6 +1,7 @@
 (ns geometry.index-test
   (:require [clojure.test :refer [deftest is testing]]
             [geometry.core :as g]
+            [geometry.feature :as f]
             [geometry.index :as index])
   (:import [geometry.feature Feature]))
 
@@ -46,18 +47,19 @@
               (mapv g/normalize))
          (->> (index/intersecting (index/create [(g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
                                                  (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")])
-                                  (Feature. (g/read-wkt "POINT (5 5)") "table" 27700))
+                                  (f/->Feature (g/read-wkt "POINT (5 5)") "table" 27700))
               (mapv g/normalize)))))
 
 (deftest test-intersecting-features-with-feature
-  (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]
-              (mapv g/read-wkt)
-              (mapv g/normalize))
-         (->> (index/intersecting (index/create [(Feature. (g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))") "table" 27700)
-                                                 (Feature. (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))") "table" 27700)])
-                                  (Feature. (g/read-wkt "POINT (5 5)") "table" 27700))
+  (is (= [(f/map->Feature
+           {:geometry "POLYGON ((0 0, 0 10, 10 10, 10 0, 0 0))"
+            :table    "table1"
+            :crs      27700})]
+         (->> (index/intersecting (index/create [(f/->Feature (g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))") "table1" 27700)
+                                                 (f/->Feature (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))") "table2" 27700)])
+                                  (f/->Feature (g/read-wkt "POINT (5 5)") "table3" 27700))
               (mapv g/normalize)
-              (mapv :geometry)))))
+              (mapv #(update % :geometry g/write-wkt))))))
 
 (deftest test-touching
   (is (= (->> ["POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"]

@@ -357,15 +357,27 @@
    (let [type (if (keyword? type) #{type} (set type))]
      (filter #(-> % (geometry-type) (type)) (single-geometries g)))))
 
-(defn polygons 
-  "Get a collection of only the polygons within g"
+(defn polygons-of
+  "Get a collection of only the polygons within g, as geometries"
   [g] 
   (single-geometries g :polygon))
 
-(defn line-strings
+(defn polygons 
+  "Get a collection of only the polygons within `g`, with each polygon as a
+   copy of the input Feature (if `g` is a Feature)"
+  [g]
+  (mapv #(update-geometry g %) (polygons-of g)))
+
+(defn line-strings-of
   "Get a collection of only the line-strings and linear-rings within g"
   [g]
   (single-geometries g #{:line-string :linear-ring}))
+
+(defn line-strings
+  "Get a collection of only the line-strings and linear-rings within `g`, with 
+   each geometry as a copy of the input Feature (if `g` is a Feature)"
+  [g]
+  (mapv #(update-geometry g %) (line-strings-of g)))
 
 (defn linearize
   "Convert geometry to a collection of line-strings and linear-rings. Multipart
