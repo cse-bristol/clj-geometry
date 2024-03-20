@@ -42,7 +42,7 @@
         ]
     (Geometries/rectangle minx miny maxx maxy)))
 
-(defn- rtree-bounds [g]
+(defn- rtree-bounds ^com.github.davidmoten.rtree2.geometry.Geometry [g]
   (let [g (g/geometry g)
         bounds (.getEnvelopeInternal g)
         minx (.getMinX bounds)
@@ -74,7 +74,7 @@
 
 (defn entries
   [^RTree index]
-  (map #(.value %) (.entries index)))
+  (map #(.value ^com.github.davidmoten.rtree2.Entry %) (.entries index)))
 
 (defn neighbours
   "Find nearest indexed feature(s) using RTree.nearest() ref
@@ -145,17 +145,17 @@
 
 (defquery intersecting
   "Returns a seq of every element in the index that intersects with the query"
-  #(.intersects %1 (g/geometry %2)))
+  #(.intersects ^org.locationtech.jts.geom.prep.PreparedGeometry %1 (g/geometry %2)))
 (defquery touching
   "Returns a seq of every element in the index that touches the query"
-  #(.touches %1 (g/geometry %2)))
+  #(.touches ^org.locationtech.jts.geom.prep.PreparedGeometry %1 (g/geometry %2)))
 (defquery overlapping
   "Returns a seq of every element in the index that overlaps the query"
-  #(.overlaps %1 (g/geometry %2)))
+  #(.overlaps ^org.locationtech.jts.geom.prep.PreparedGeometry %1 (g/geometry %2)))
 (defquery covered-by
   "Returns a seq of every element in the index that is covered entirely by the query"
-  #(.covers %1 (g/geometry %2)))
+  #(.covers ^org.locationtech.jts.geom.prep.PreparedGeometry %1 (g/geometry %2)))
 
 (defquery centroid-intersecting
   "Returns a seq of every element in the index whose centroid intersects with the query"
-  #(.intersects %1 (g/centroid-of (g/geometry %2))))
+  #(.intersects ^org.locationtech.jts.geom.prep.PreparedGeometry %1 (g/centroid-of (g/geometry %2))))
