@@ -5,7 +5,7 @@
   For example
 
   (with-open [h (gpkg/open my-file)]
-     (doseq [f h]
+     (doseq [f (gpkg/features h)]
         (println f)))
 
 
@@ -18,7 +18,7 @@
 
   (with-open [h (gpkg/open my-file :table x)]
       (gpkg/write output-file output-table
-         (for [feature h] (assoc feature :foo 1))))
+         (for [feature (gpkg/features h)] (assoc feature :foo 1))))
 
   this will infer the columns & geometry on the output features,
   which should be avoided in production, as it won't work properly
@@ -136,20 +136,26 @@
         md   ^java.sql.ResultSetMetaData (.getMetaData rs)
         cols (vec (for [i (range 1 (inc (.getColumnCount md)))]
                     [i (.getColumnName md i)]))
-        has-next (atom true)]
+        asked-has-next (atom false)
+        has-next (atom false)]
     (reify
       java.util.Iterator
       (next [_]
-        (reset! has-next (.next rs))
-        (when @has-next
-          (f/map->Feature
-           (persistent!
-            (reduce
-             (fn [a [^int i ^String n]] (assoc! a (key-transform n) (.getObject rs i)))
-             (transient {:table table})
-             cols)))))
+        (when-not @asked-has-next
+          (.next rs))
+        (reset! asked-has-next false)
+        (f/map->Feature
+         (persistent!
+          (reduce
+           (fn [a [^int i ^String n]] (assoc! a (key-transform n) (.getObject rs i)))
+           (transient {:table table})
+           cols))))
 
-      (hasNext [_] @has-next)
+      (hasNext [_]
+        (when-not @asked-has-next
+          (reset! has-next (.next rs))
+          (reset! asked-has-next true))
+        @has-next)
 
       java.io.Closeable
       (close [_]
@@ -157,14 +163,23 @@
         (.close stmt)
         (.close conn)))))
 
+(defn features 
+  "Given the result of calling `gpkg/open`, convert the closable iterator
+   that returns into a lazy sequence of features. This is just a wrapper around 
+   iterator-seq."
+  [gpkg]
+  (iterator-seq gpkg))
+
 (defn open 
-  "The result of gpkg/open is a lazy sequence that is also closeable.
-   The entires of the sequence are geometry.feature/Feature instances,
-   so they have a geometry, table name & CRS, and then contain whatever
+  "The result of gpkg/open is a closeable iterator. It can be turned into
+   a lazy sequence using gpkg/features (which is just a wrapper around 
+   iterator-seq).
+   The entries of the iterator are geometry.feature/Feature instances,
+   so they have a :geometry, :table :crs, and then contain whatever
    columns are in the geopackage table they came from.
    
    (with-open [h (gpkg/open my-file)]
-     (doseq [f h]
+     (doseq [f (gpkg/features h)]
         (println f)))
    
    If you know the geometries have a certain precision, you can
@@ -228,17 +243,40 @@
                 {:table nil :tables nil :iterator nil :closed false}))))
 
         ;; we don't thread state through here because we want to handle close
-        feature-seq
-        (fn feature-seq []
-          (lazy-seq
-           (let [state (vswap! state maybe-advance!)]
-             (when-let [^java.util.Iterator iterator (:iterator state)]
-               (cons (.next iterator)
-                     (feature-seq))))))
+        ;; feature-seq
+        ;; (fn feature-seq []
+        ;;   (lazy-seq
+        ;;    (let [state (vswap! state maybe-advance!)]
+        ;;      (when-let [^java.util.Iterator iterator (:iterator state)]
+        ;;        (cons (.next iterator)
+        ;;              (feature-seq))))))
 
-        feature-seq ^clojure.lang.ISeq (keep identity (feature-seq))]
+        ;; feature-seq ^clojure.lang.ISeq (keep identity (feature-seq))
+        ]
     
     (reify
+      java.lang.AutoCloseable
+      (close [_]
+        ;; close feature iterator
+        (vswap! state (fn [state]
+                        (when-let [^java.io.Closeable i (:iterator state)] (.close i))
+                        (assoc state :iterator nil :closed true)))
+        (.dispose store))
+      
+      java.util.Iterator
+      (next [_]
+        (let [state (vswap! state maybe-advance!)]
+          (when-let [^java.util.Iterator iterator (:iterator state)]
+            (.next iterator))))
+
+      (hasNext [_]
+        (let [state (vswap! state maybe-advance!)]
+          (if-let [^java.util.Iterator iterator (:iterator state)]
+            (.hasNext iterator)
+            false)))
+      )
+    ;; (feature-seq)
+    #_(reify
       java.lang.AutoCloseable
       (close [_]
         ;; close feature iterator

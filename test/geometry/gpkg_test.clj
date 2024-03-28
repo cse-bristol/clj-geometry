@@ -30,13 +30,13 @@
       ;; read them back and compare
       
       (with-open [in (sut/open f :table-name "test-table")]
-        (t/is (= [{:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "abc" "c" 1 "inf" ##Inf}
-                  {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "def" "c" 0 "inf" ##Inf}
-                  {:geometry nil "id" 3 :table "test-table" :crs "EPSG:27700" "b" "ghi" "c" 0 "inf" ##Inf}]
+        (t/is (= [{:geometry nil "id" 3 :table "test-table" :crs "EPSG:27700" "b" "ghi" "c" 0 "inf" ##Inf}
+                  {:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "abc" "c" 1 "inf" ##Inf}
+                  {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "def" "c" 0 "inf" ##Inf}]
 
                  ;; we map into {} to strip off the feature type
                  ;; since we want to do a simple comparison here
-                 (vec (map #(into {} %) in)))))
+                 (vec (map #(into {} %) (sut/features in))))))
       
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
@@ -56,12 +56,13 @@
         "id" {:type :integer}})
       
       (with-open [in (sut/open f :table-name "test-table")]
-        (t/is (= [{:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700"}
-                  {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700"}]
-                 (vec (map #(into {} %) in))))
-        (t/is (= [{:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700"}
-                  {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700"}]
-                 (vec (map #(into {} %) in)))))
+        (let [ls (sut/features in)]
+          (t/is (= [{:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700"}
+                    {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700"}]
+                   (vec (map #(into {} %) ls))))
+          (t/is (= [{:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700"}
+                    {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700"}]
+                   (vec (map #(into {} %) ls))))))
       
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
@@ -106,7 +107,7 @@
 
                  ;; we map into {} to strip off the feature type
                  ;; since we want to do a simple comparison here
-                 (vec (map #(into {} %) in)))))
+                 (vec (map #(into {} %) (sut/features in))))))
       
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
@@ -134,7 +135,7 @@
       (with-open [in (sut/open f :table-name "sqlite-table")]
         (t/is (= [{:geometry nil "a" 1 "b" "aaa" "c" 1 "inf" ##Inf :table "sqlite-table" :crs nil}
                   {:geometry nil "a" 2 "b" "bbb" "c" 0 "inf" ##Inf :table "sqlite-table" :crs nil}]
-                 (vec (map #(into {} %) in)))))
+                 (vec (map #(into {} %) (sut/features in))))))
             
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
@@ -175,7 +176,7 @@
                   {:geometry (g/make-point 4 5) :id 2 :table "test-table" :crs "EPSG:27700"}
                   {:geometry nil :a 1 :b "aaa" :c 1 :inf ##Inf :table "data-table" :crs nil}
                   {:geometry nil :a 2 :b "bbb" :c 0 :inf ##Inf :table "data-table" :crs nil}]
-                 (vec (map #(into {} %) in)))))
+                 (vec (map #(into {} %) (sut/features in))))))
             
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
@@ -201,7 +202,7 @@
 
       (with-open [in (sut/open f :spatial-only? false :key-transform keyword)]
         (t/is (= []
-                 (vec (map #(into {} %) in)))))
+                 (vec (map #(into {} %) (sut/features in))))))
             
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
@@ -236,3 +237,11 @@
             
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
+
+(comment
+  (with-open [gpkg (sut/open "/tmp/hnzp-1966294190446547555/Data/oproad_gb.gpkg" :table-name "road_link")
+              f (io/writer "/tmp/hnzp-1966294190446547555/test.txt")]
+    (doseq [row (sut/features gpkg)]
+      (.write f (get row "id"))
+      (.write f "\n")))
+  )
