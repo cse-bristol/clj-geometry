@@ -136,7 +136,6 @@
                                  )
                              other-features
                              (assoc target-points target target-point)))))
-                (do (log/warn "No connecting line for %s, it will get lost" target)
-                    (recur linear-features index other-features target-points))))))]
+                (recur linear-features index other-features target-points)))))]
     [linear-features target-points]))
 
