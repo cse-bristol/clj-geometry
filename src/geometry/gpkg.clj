@@ -206,7 +206,7 @@
                           :closed false})
 
         maybe-advance!
-        (fn [{:keys [^java.util.Iterator iterator tables] :as state}]
+        (fn maybe-advance! [{:keys [^java.util.Iterator iterator tables] :as state}]
           (when (:closed state) (throw (ex-info "Iterating on a geopackage that has been closed" {:input gpkg :state state})))
           (if (and iterator (.hasNext iterator))
             state ;; just continue with this iterator
@@ -220,38 +220,36 @@
                                                    nil
                                                    (throw e))))]
                 (when iterator (.close iterator))
-                (if source
-                  ;; spatial table
-                  (let [crs (-> source .getInfo .getCRS (CRS/lookupIdentifier true))
-                        crs-transform (when to-crs
-                                        (let [from-crs (->crs crs)
-                                              to-crs (->crs to-crs)]
-                                          (CRS/findMathTransform from-crs to-crs true)))]
-                    (assoc state
-                           :table table
-                           :tables tables
-                           :iterator (gpkg-iterator source table crs crs-transform key-transform)))
-                  ;; non-spatial table
-                  (assoc state
-                         :table table
-                         :tables tables
-                         :iterator (sqlite-iterator gpkg table key-transform))))
+                (let [next-state
+                      (if source
+                        ;; spatial table
+                        (let [crs (-> source .getInfo .getCRS (CRS/lookupIdentifier true))
+                              crs-transform (when to-crs
+                                              (let [from-crs (->crs crs)
+                                                    to-crs (->crs to-crs)]
+                                                (CRS/findMathTransform from-crs to-crs true)))]
+                          (assoc state
+                                 :table table
+                                 :tables tables
+                                 :iterator (gpkg-iterator source table crs crs-transform key-transform)))
+                        ;; non-spatial table
+                        (assoc state
+                               :table table
+                               :tables tables
+                               :iterator (sqlite-iterator gpkg table key-transform)))]
+
+                  ;; this is to deal with empty tables - the Iterator implementation that's returned
+                  ;; below mustn't (not (.hasNext)) until we have got to the end, so if we've made an
+                  ;; iterator for a table with nothing in we need to move onto the next table
+                  (if (and (:iterator next-state)
+                           (not (.hasNext (:iterator next-state))))
+                    (maybe-advance! next-state)
+                    next-state)))
 
               ;; reached the end
               (do
                 (when iterator (.close iterator))
                 {:table nil :tables nil :iterator nil :closed false}))))
-
-        ;; we don't thread state through here because we want to handle close
-        ;; feature-seq
-        ;; (fn feature-seq []
-        ;;   (lazy-seq
-        ;;    (let [state (vswap! state maybe-advance!)]
-        ;;      (when-let [^java.util.Iterator iterator (:iterator state)]
-        ;;        (cons (.next iterator)
-        ;;              (feature-seq))))))
-
-        ;; feature-seq ^clojure.lang.ISeq (keep identity (feature-seq))
         ]
     
     (reify

@@ -238,6 +238,23 @@
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
 
+(t/deftest test-empty-table
+  (let [f (.toFile (java.nio.file.Files/createTempFile
+                    "test-empty-table" ".gpkg"
+                    (into-array java.nio.file.attribute.FileAttribute [])))]
+    (sut/write
+     f "zempty" [] {:schema {"bork" {:type :integer}}})
+    
+    (sut/write
+     f "full" [{:bork 1} {:bork 2} {:bork 9}] {:schema {"bork" {:type :integer :accessor :bork}}})
+
+    (sut/write
+     f "aempty" [] {:schema {"bork" {:type :integer}}})
+
+    (let [in (with-open [g (sut/open f :key-transform keyword)] (doall (sut/features g)))]
+      (t/is (= #{["full" 1] ["full" 2] ["full" 9]}
+               (set (map (juxt :table :bork) in)))))))
+
 (comment
   (with-open [gpkg (sut/open "/tmp/hnzp-1966294190446547555/Data/oproad_gb.gpkg" :table-name "road_link")
               f (io/writer "/tmp/hnzp-1966294190446547555/test.txt")]
