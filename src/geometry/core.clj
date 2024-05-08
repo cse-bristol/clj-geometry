@@ -15,21 +15,28 @@
   This is because it feels weird to have the centroid of a feature
   return a feature.
   "
-  (:import
-   [org.locationtech.jts.geom.util GeometryFixer]
-   [org.locationtech.jts.io WKTReader]
-   [org.locationtech.jts.algorithm.hull ConcaveHull]
-   [org.locationtech.jts.algorithm MinimumBoundingCircle]
-   [org.locationtech.jts.precision GeometryPrecisionReducer]
-   [org.locationtech.jts.operation.distance GeometryLocation]
-   [org.locationtech.jts.operation.polygonize Polygonizer]
-   [org.locationtech.jts.operation.buffer BufferOp BufferParameters]
-   [org.locationtech.jts.noding.snapround SnapRoundingNoder]
-   [org.locationtech.jts.noding SegmentStringDissolver SegmentStringUtil]
-   [org.locationtech.jts.geom
-    LinearRing
-    Coordinate Geometry GeometryFactory LineString Point Polygon
-    PrecisionModel]))
+  (:import [org.locationtech.jts.algorithm MinimumBoundingCircle]
+           [org.locationtech.jts.algorithm.hull ConcaveHull]
+           [org.locationtech.jts.geom
+            Coordinate
+            Geometry
+            GeometryFactory
+            LineString
+            LinearRing
+            Point
+            Polygon
+            PrecisionModel
+            TopologyException]
+           [org.locationtech.jts.geom.util GeometryFixer]
+           [org.locationtech.jts.io WKTReader]
+           [org.locationtech.jts.noding SegmentStringDissolver SegmentStringUtil]
+           [org.locationtech.jts.noding.snapround SnapRoundingNoder]
+           [org.locationtech.jts.operation.buffer BufferOp BufferParameters]
+           [org.locationtech.jts.operation.distance GeometryLocation]
+           [org.locationtech.jts.operation.overlay OverlayOp]
+           [org.locationtech.jts.operation.overlayng OverlayNGRobust]
+           [org.locationtech.jts.operation.polygonize Polygonizer]
+           [org.locationtech.jts.precision GeometryPrecisionReducer]))
 
 (def ^:private ^org.locationtech.jts.geom.CoordinateSequenceFactory patched-csf
   "This amended coordinate sequence factory is required so we get
@@ -219,17 +226,6 @@
    ^GeometryFactory *factory* (into-array Geometry (map geometry gs))))
 
 ;; core geometry operations
-(defn union
-  ([g]   (update-geometry g (.union (geometry g))))
-  ([a b] (update-geometry a (.union (geometry a) (geometry b)))))
-
-(defn intersection
-  ([a b] (update-geometry a (.intersection (geometry a) (geometry b)))))
-
-(defn difference
-  "geometry A minus geometry B"
-  [a b]
-  (update-geometry a (.difference (geometry a) (geometry b))))
 
 (def end-cap-styles {:round 1 :flat 2 :square 3})
 (def join-styles {:round 1 :mitre 2 :bevel 3})
@@ -378,6 +374,59 @@
    each geometry as a copy of the input Feature (if `g` is a Feature)"
   [g]
   (mapv #(update-geometry g %) (line-strings-of g)))
+
+(defn points-of
+  "Get a collection of only the points within g"
+  [g]
+  (single-geometries g :point))
+
+(defn points
+  "Get a collection of only the points within `g`, with 
+   each geometry as a copy of the input Feature (if `g` is a Feature)"
+  [g]
+  (mapv #(update-geometry g %) (points-of g)))
+
+;; overlay operations
+
+(defn- coerce [g coerce-to]
+  (case coerce-to
+    nil g
+    :points (points g)
+    :multi-point (make-multi-point (points g))
+    :line-strings (line-strings g)
+    :multi-line-string (make-multi-line-string (line-strings g))
+    :polygons (polygons g)
+    :multi-polygon (make-multi-polygon (polygons g))
+    :geometries (single-geometries g)
+    :geometry-collection (make-collection (single-geometries g))))
+
+(defn- overlay [a b op coerce-to]
+  (try
+    (update-geometry a (coerce (OverlayNGRobust/overlay (geometry a) (geometry b) op) coerce-to))
+    (catch TopologyException _
+      (update-geometry a (coerce (OverlayNGRobust/overlay (make-valid (geometry a)) (make-valid (geometry b)) op) coerce-to)))))
+
+(defn union
+  ([g]
+   (try
+     (update-geometry g (OverlayNGRobust/union (geometry g)))
+     (catch TopologyException _
+       (update-geometry g (OverlayNGRobust/union (make-valid (geometry g)))))))
+  ([a b & {:keys [coerce-to] :or {coerce-to nil}}]
+   (overlay a b OverlayOp/UNION coerce-to)))
+
+(defn intersection
+  ([a b & {:keys [coerce-to] :or {coerce-to nil}}]
+   (overlay a b OverlayOp/INTERSECTION coerce-to)))
+
+(defn difference
+  "geometry A minus geometry B"
+  [a b & {:keys [coerce-to] :or {coerce-to nil}}]
+  (overlay a b OverlayOp/DIFFERENCE coerce-to))
+
+(defn sym-difference
+  [a b & {:keys [coerce-to] :or {coerce-to nil}}]
+  (overlay a b OverlayOp/SYMDIFFERENCE coerce-to))
 
 (defn linearize
   "Convert geometry to a collection of line-strings and linear-rings. Multipart
