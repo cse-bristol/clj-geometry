@@ -389,16 +389,17 @@
 ;; overlay operations
 
 (defn- coerce [g coerce-to]
-  (case coerce-to
-    nil g
-    :points (points g)
-    :multi-point (make-multi-point (points g))
-    :line-strings (line-strings g)
-    :multi-line-string (make-multi-line-string (line-strings g))
-    :polygons (polygons g)
-    :multi-polygon (make-multi-polygon (polygons g))
-    :geometries (single-geometries g)
-    :geometry-collection (make-collection (single-geometries g))))
+  (let [g (make-valid g)]
+    (case coerce-to
+      nil g
+      :points (points g)
+      :multi-point (make-multi-point (points g))
+      :line-strings (line-strings g)
+      :multi-line-string (make-multi-line-string (line-strings g))
+      :polygons (polygons g)
+      :multi-polygon (make-multi-polygon (polygons g))
+      :geometries (single-geometries g)
+      :geometry-collection (make-collection (single-geometries g)))))
 
 (defn- overlay [a b op coerce-to]
   (try
@@ -407,24 +408,62 @@
       (update-geometry a (coerce (OverlayNGRobust/overlay (make-valid (geometry a)) (make-valid (geometry b)) op) coerce-to)))))
 
 (defn union
+  "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them.
+   
+   Outputs can be optionally coerced using the `:coerce-to` argument, which 
+   can be one of
+   :points :multi-point :line-strings :multi-line-string :polygons :multi-polygon :geometries :geometry-collection
+   (This is not available for unary union)"
   ([g]
    (try
-     (update-geometry g (OverlayNGRobust/union (geometry g)))
+     (update-geometry g (make-valid (OverlayNGRobust/union (geometry g))))
      (catch TopologyException _
-       (update-geometry g (OverlayNGRobust/union (make-valid (geometry g)))))))
+       (update-geometry g (make-valid (OverlayNGRobust/union (make-valid (geometry g))))))))
   ([a b & {:keys [coerce-to] :or {coerce-to nil}}]
    (overlay a b OverlayOp/UNION coerce-to)))
 
 (defn intersection
+  "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them.
+   
+   Outputs can be optionally coerced using the `:coerce-to` argument, which 
+   can be one of
+   :points :multi-point :line-strings :multi-line-string :polygons :multi-polygon :geometries :geometry-collection"
   ([a b & {:keys [coerce-to] :or {coerce-to nil}}]
    (overlay a b OverlayOp/INTERSECTION coerce-to)))
 
 (defn difference
-  "geometry A minus geometry B"
+  "Geometry A minus geometry B.
+   
+   Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them.
+
+   Outputs can be optionally coerced using the `:coerce-to` argument, which
+   can be one of
+   :points :multi-point :line-strings :multi-line-string :polygons :multi-polygon :geometries :geometry-collection"
   [a b & {:keys [coerce-to] :or {coerce-to nil}}]
   (overlay a b OverlayOp/DIFFERENCE coerce-to))
 
 (defn sym-difference
+  "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them.
+   
+   Outputs can be optionally coerced using the `:coerce-to` argument, which
+   can be one of
+   :points :multi-point :line-strings :multi-line-string :polygons :multi-polygon :geometries :geometry-collection"
   [a b & {:keys [coerce-to] :or {coerce-to nil}}]
   (overlay a b OverlayOp/SYMDIFFERENCE coerce-to))
 
