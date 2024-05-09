@@ -74,6 +74,10 @@
   (is (= (norm-all (geom/union (geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
                                (geom/read-wkt "LINESTRING (3 0, 3 10)")
                                :coerce-to :line-strings))
+         (norm-all (geom/unary-union (geom/make-collection
+                                      [(geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
+                                       (geom/read-wkt "LINESTRING (3 0, 3 10)")])
+                                     :coerce-to :line-strings))
          (norm-all (map geom/read-wkt ["LINESTRING (0 0, 3 3)"
                                        "LINESTRING (3 3, 5 5)"
                                        "LINESTRING (5 5, 10 10)"

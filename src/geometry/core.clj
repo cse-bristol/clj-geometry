@@ -407,6 +407,22 @@
     (catch TopologyException _
       (update-geometry a (coerce (OverlayNGRobust/overlay (make-valid (geometry a)) (make-valid (geometry b)) op) coerce-to)))))
 
+(defn unary-union
+  "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them.
+   
+   Outputs can be optionally coerced using the `:coerce-to` argument, which 
+   can be one of
+   :points :multi-point :line-strings :multi-line-string :polygons :multi-polygon :geometries :geometry-collection"
+  [g & {:keys [coerce-to] :or {coerce-to nil}}]
+  (try
+    (update-geometry g (coerce (OverlayNGRobust/union (geometry g)) coerce-to))
+    (catch TopologyException _
+      (update-geometry g (coerce (OverlayNGRobust/union (make-valid (geometry g))) coerce-to)))))
+
 (defn union
   "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
    whose precision approaches floating point limits. If this still fails,
@@ -416,15 +432,9 @@
    
    Outputs can be optionally coerced using the `:coerce-to` argument, which 
    can be one of
-   :points :multi-point :line-strings :multi-line-string :polygons :multi-polygon :geometries :geometry-collection
-   (This is not available for unary union)"
-  ([g]
-   (try
-     (update-geometry g (make-valid (OverlayNGRobust/union (geometry g))))
-     (catch TopologyException _
-       (update-geometry g (make-valid (OverlayNGRobust/union (make-valid (geometry g))))))))
-  ([a b & {:keys [coerce-to] :or {coerce-to nil}}]
-   (overlay a b OverlayOp/UNION coerce-to)))
+   :points :multi-point :line-strings :multi-line-string :polygons :multi-polygon :geometries :geometry-collection"
+  [a b & {:keys [coerce-to] :or {coerce-to nil}}]
+  (overlay a b OverlayOp/UNION coerce-to))
 
 (defn intersection
   "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
