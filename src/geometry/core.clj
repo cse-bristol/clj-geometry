@@ -227,12 +227,23 @@
 
 ;; core geometry operations
 
+
+(defn valid? ^Boolean [g] (.isValid (geometry g)))
+
+(defn make-valid [g]
+  (if (valid? g) g
+      (let [buffed (if (#{:polygon :multi-polygon} (geometry-type g))
+                     (.buffer (geometry g) 0.0)
+                     g)]
+        (if (valid? buffed) buffed
+            (update-geometry buffed (GeometryFixer/fix (geometry buffed)))))))
+
 (def end-cap-styles {:round 1 :flat 2 :square 3})
 (def join-styles {:round 1 :mitre 2 :bevel 3})
 
 (defn buffer
   ([g ^double r]
-   (update-geometry g (.buffer (geometry g) (double r))))
+   (update-geometry g (make-valid (.buffer (geometry g) (double r)))))
 
   ([g r quad-segs end-cap-style join-style]
    (buffer g r quad-segs end-cap-style join-style 5.0))
@@ -240,12 +251,13 @@
   ([g r quad-segs end-cap-style join-style mitre-limit]
    (update-geometry
     g
-    (BufferOp/bufferOp (geometry g)
-                       (double r)
-                       (BufferParameters. quad-segs
-                                          (end-cap-styles end-cap-style)
-                                          (join-styles join-style)
-                                          mitre-limit)))))
+    (make-valid
+     (BufferOp/bufferOp (geometry g)
+                        (double r)
+                        (BufferParameters. quad-segs
+                                           (end-cap-styles end-cap-style)
+                                           (join-styles join-style)
+                                           mitre-limit))))))
 
 (defn length ^double [g] (.getLength (geometry g)))
 (defn area ^double [g] (.getArea (geometry g)))
@@ -254,18 +266,10 @@
 (defn covers? ^Boolean [a b] (.covers (geometry a) (geometry b)))
 (defn overlaps? ^Boolean [a b] (.overlaps (geometry a) (geometry b)))
 (defn distance ^double [a b] (.distance (geometry a) (geometry b)))
-(defn valid? ^Boolean [g] (.isValid (geometry g)))
 (defn empty-geom? ^Boolean [g] (.isEmpty (geometry g)))
 (defn relates? ^Boolean [a b ^String m] (.relate (geometry a) (geometry b) m))
 
 ;; other operations
-(defn make-valid [g]
-  (if (valid? g) g
-      (let [buffed (if (#{:polygon :multi-polygon} (geometry-type g))
-                     (buffer g 0.0)
-                     g)]
-        (if (valid? buffed) buffed
-            (update-geometry buffed (GeometryFixer/fix (geometry buffed)))))))
 
 (defn exterior-ring-of [g] (.getExteriorRing ^Polygon (geometry g)))
 
