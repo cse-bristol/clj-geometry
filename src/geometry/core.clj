@@ -15,21 +15,28 @@
   This is because it feels weird to have the centroid of a feature
   return a feature.
   "
-  (:import
-   [org.locationtech.jts.geom.util GeometryFixer]
-   [org.locationtech.jts.io WKTReader]
-   [org.locationtech.jts.algorithm.hull ConcaveHull]
-   [org.locationtech.jts.algorithm MinimumBoundingCircle]
-   [org.locationtech.jts.precision GeometryPrecisionReducer]
-   [org.locationtech.jts.operation.distance GeometryLocation]
-   [org.locationtech.jts.operation.polygonize Polygonizer]
-   [org.locationtech.jts.operation.buffer BufferOp BufferParameters]
-   [org.locationtech.jts.noding.snapround SnapRoundingNoder]
-   [org.locationtech.jts.noding SegmentStringDissolver SegmentStringUtil]
-   [org.locationtech.jts.geom
-    LinearRing
-    Coordinate Geometry GeometryFactory LineString Point Polygon
-    PrecisionModel]))
+  (:import [org.locationtech.jts.algorithm MinimumBoundingCircle]
+           [org.locationtech.jts.algorithm.hull ConcaveHull]
+           [org.locationtech.jts.geom
+            Coordinate
+            Geometry
+            GeometryFactory
+            LineString
+            LinearRing
+            Point
+            Polygon
+            PrecisionModel
+            TopologyException]
+           [org.locationtech.jts.geom.util GeometryFixer]
+           [org.locationtech.jts.io WKTReader]
+           [org.locationtech.jts.noding SegmentStringDissolver SegmentStringUtil]
+           [org.locationtech.jts.noding.snapround SnapRoundingNoder]
+           [org.locationtech.jts.operation.buffer BufferOp BufferParameters]
+           [org.locationtech.jts.operation.distance GeometryLocation]
+           [org.locationtech.jts.operation.overlay OverlayOp]
+           [org.locationtech.jts.operation.overlayng OverlayNGRobust]
+           [org.locationtech.jts.operation.polygonize Polygonizer]
+           [org.locationtech.jts.precision GeometryPrecisionReducer]))
 
 (def ^:private ^org.locationtech.jts.geom.CoordinateSequenceFactory patched-csf
   "This amended coordinate sequence factory is required so we get
@@ -219,24 +226,24 @@
    ^GeometryFactory *factory* (into-array Geometry (map geometry gs))))
 
 ;; core geometry operations
-(defn union
-  ([g]   (update-geometry g (.union (geometry g))))
-  ([a b] (update-geometry a (.union (geometry a) (geometry b)))))
 
-(defn intersection
-  ([a b] (update-geometry a (.intersection (geometry a) (geometry b)))))
 
-(defn difference
-  "geometry A minus geometry B"
-  [a b]
-  (update-geometry a (.difference (geometry a) (geometry b))))
+(defn valid? ^Boolean [g] (.isValid (geometry g)))
+
+(defn make-valid [g]
+  (if (valid? g) g
+      (let [buffed (if (#{:polygon :multi-polygon} (geometry-type g))
+                     (.buffer (geometry g) 0.0)
+                     g)]
+        (if (valid? buffed) buffed
+            (update-geometry buffed (GeometryFixer/fix (geometry buffed)))))))
 
 (def end-cap-styles {:round 1 :flat 2 :square 3})
 (def join-styles {:round 1 :mitre 2 :bevel 3})
 
 (defn buffer
   ([g ^double r]
-   (update-geometry g (.buffer (geometry g) (double r))))
+   (update-geometry g (make-valid (.buffer (geometry g) (double r)))))
 
   ([g r quad-segs end-cap-style join-style]
    (buffer g r quad-segs end-cap-style join-style 5.0))
@@ -244,12 +251,13 @@
   ([g r quad-segs end-cap-style join-style mitre-limit]
    (update-geometry
     g
-    (BufferOp/bufferOp (geometry g)
-                       (double r)
-                       (BufferParameters. quad-segs
-                                          (end-cap-styles end-cap-style)
-                                          (join-styles join-style)
-                                          mitre-limit)))))
+    (make-valid
+     (BufferOp/bufferOp (geometry g)
+                        (double r)
+                        (BufferParameters. quad-segs
+                                           (end-cap-styles end-cap-style)
+                                           (join-styles join-style)
+                                           mitre-limit))))))
 
 (defn length ^double [g] (.getLength (geometry g)))
 (defn area ^double [g] (.getArea (geometry g)))
@@ -258,18 +266,10 @@
 (defn covers? ^Boolean [a b] (.covers (geometry a) (geometry b)))
 (defn overlaps? ^Boolean [a b] (.overlaps (geometry a) (geometry b)))
 (defn distance ^double [a b] (.distance (geometry a) (geometry b)))
-(defn valid? ^Boolean [g] (.isValid (geometry g)))
 (defn empty-geom? ^Boolean [g] (.isEmpty (geometry g)))
 (defn relates? ^Boolean [a b ^String m] (.relate (geometry a) (geometry b) m))
 
 ;; other operations
-(defn make-valid [g]
-  (if (valid? g) g
-      (let [buffed (if (#{:polygon :multi-polygon} (geometry-type g))
-                     (buffer g 0.0)
-                     g)]
-        (if (valid? buffed) buffed
-            (update-geometry buffed (GeometryFixer/fix (geometry buffed)))))))
 
 (defn exterior-ring-of [g] (.getExteriorRing ^Polygon (geometry g)))
 
@@ -378,6 +378,68 @@
    each geometry as a copy of the input Feature (if `g` is a Feature)"
   [g]
   (mapv #(update-geometry g %) (line-strings-of g)))
+
+(defn points-of
+  "Get a collection of only the points within g"
+  [g]
+  (single-geometries g :point))
+
+(defn points
+  "Get a collection of only the points within `g`, with 
+   each geometry as a copy of the input Feature (if `g` is a Feature)"
+  [g]
+  (mapv #(update-geometry g %) (points-of g)))
+
+;; overlay operations
+
+(defn- overlay [a b op]
+  (try
+    (update-geometry a (make-valid (OverlayNGRobust/overlay (geometry a) (geometry b) op)))
+    (catch TopologyException _
+      (update-geometry a (make-valid (OverlayNGRobust/overlay (make-valid (geometry a)) (make-valid (geometry b)) op))))))
+
+(defn union
+  "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them."
+  ([g]
+   (try
+     (update-geometry g (OverlayNGRobust/union (geometry g)))
+     (catch TopologyException _
+       (update-geometry g (OverlayNGRobust/union (make-valid (geometry g)))))))
+  ([a b]
+   (overlay a b OverlayOp/UNION)))
+
+(defn intersection
+  "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them."
+  ([a b]
+   (overlay a b OverlayOp/INTERSECTION)))
+
+(defn difference
+  "Geometry A minus geometry B.
+   
+   Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them."
+  [a b]
+  (overlay a b OverlayOp/DIFFERENCE))
+
+(defn sym-difference
+  "Uses JTS' OverlayNGRobust to avoid TopologyExceptions due to coordinates 
+   whose precision approaches floating point limits. If this still fails,
+   will call `make-valid` on the inputs and retry.
+   
+   Outputs will have `made-valid` called on them."
+  [a b]
+  (overlay a b OverlayOp/SYMDIFFERENCE))
 
 (defn linearize
   "Convert geometry to a collection of line-strings and linear-rings. Multipart
