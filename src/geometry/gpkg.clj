@@ -61,7 +61,9 @@
                     "database" (.getCanonicalPath (io/as-file file))})]
         (try
           (set (.getTypeNames store))
-          (finally (.close geopackage))))
+          (finally 
+            (.dispose store)
+            (.close geopackage))))
       (with-open [conn (jdbc/get-connection (format "jdbc:sqlite:%s"
                                                     (.getCanonicalPath (io/as-file file))))]
         (jdbc/with-transaction [tx conn]
@@ -272,29 +274,7 @@
           (if-let [^java.util.Iterator iterator (:iterator state)]
             (.hasNext iterator)
             false)))
-      )
-    ;; (feature-seq)
-    #_(reify
-      java.lang.AutoCloseable
-      (close [_]
-        ;; close feature iterator
-        (vswap! state (fn [state]
-                        (when-let [^java.io.Closeable i (:iterator state)] (.close i))
-                        (assoc state :iterator nil :closed true)))
-        (.dispose store))
-
-      ;; these are a bit immoral in that the returned
-      ;; object loses its closability. but this will be OK
-      ;; for the main pattern of (with-open [x ...] (dothings x))
-      clojure.lang.ISeq
-      (first [_] (.first feature-seq))
-      (next [_] (.next feature-seq))
-      (more [_] (.more feature-seq))
-      (cons [_ x] (.cons feature-seq x))
-      (count [_] (.count feature-seq))
-      (empty [_] (.empty feature-seq))
-      (equiv [_ y] (.equiv feature-seq y))
-      (seq [_] (.seq feature-seq)))))
+      )))
 
 (defn- kv-type [k v]
   [(name k)
