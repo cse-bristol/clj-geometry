@@ -485,31 +485,37 @@
                         :or   {srid 27700}}] (spec-geom-field spec)]
        (if geom-field
          ;; spatial data:
-         (let [getters       (mapv (fn [[k v]]
-                                     (:accessor v #(get % k)))
-                                   spec)
-               feature-entry ^FeatureEntry (->feature-entry table-name spec)]
+         (let [emit-feature (let [getters
+                                   (vec (for [[k v] spec]
+                                          (or (:accessor v)
+                                              #(get % k))))]
+                               (fn [feature]
+                                 (mapv #(% feature) getters)))
+               feature-entry ^FeatureEntry (->feature-entry table-name spec)
+               ]
            (.setBounds feature-entry
                        (ReferencedEnvelope. 0 0 0 0 (CRS/decode (str "EPSG:" srid))))
            (try
              (.create geopackage feature-entry (->geotools-schema table-name spec))
              (catch java.lang.IllegalArgumentException _))
 
-           ;; TODO should we have a transaction around the whole lot?
-           (with-open [tx (DefaultTransaction.)]
-             (try
-               (with-open [writer (.writer geopackage feature-entry true nil tx)]
-                 (run!
-                  (fn [feature]
-                    (let [n ^JDBCFeatureReader$ResultSetFeature (.next writer)]
-                      (.setAttributes
-                       n
-                       ^java.util.List (mapv (fn [getter] (getter feature)) getters)))
-                    (.write writer))
-                  features))
-
-               (.commit tx)
-               (catch Exception e (.rollback tx) (throw e)))))
+           ;; It may seem odd that we are getting an iterator out here
+           ;; rather than just doing doseq [feature features], but for
+           ;; reasons Neil & Tom were unable to discern that prevents
+           ;; garbage collection of features (even though it looks
+           ;; eligible for locals clearing).
+           (let [iter (.iterator features)]
+             (with-open [tx (DefaultTransaction.)
+                         writer (.writer geopackage feature-entry true nil tx)]
+               (loop []
+                 (when (.hasNext iter)
+                   (let [feature (.next iter)]
+                     (.setAttributes
+                      ^JDBCFeatureReader$ResultSetFeature (.next writer)
+                      ^java.util.List (emit-feature feature))
+                     (.write writer)
+                     (recur))))
+               (.commit tx))))
 
          ;; non-spatial data:
          (let [quote-name (fn [s] (str "\"" (name s) "\""))
@@ -551,5 +557,3 @@
                       (accessor feature))))
                 {:batch-size batch-insert-size})))))
        nil))))
-
-
