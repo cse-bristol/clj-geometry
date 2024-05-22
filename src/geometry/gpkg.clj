@@ -485,16 +485,21 @@
            ;; garbage collection of features (even though it looks
            ;; eligible for locals clearing).
            (let [iter (.iterator features)]
-             (with-open [tx (DefaultTransaction.)
-                         writer (.writer geopackage feature-entry true nil tx)]
-               (loop []
-                 (when (.hasNext iter)
-                   (let [feature (.next iter)]
-                     (.setAttributes
-                      ^JDBCFeatureReader$ResultSetFeature (.next writer)
-                      ^java.util.List (emit-feature feature))
-                     (.write writer)
-                     (recur))))
+             ;; It is important that there are two with-opens here.
+             ;; because the ordering of events has to be
+             ;; (.close writer)
+             ;; (.commit tx)
+             ;; (.close tx)
+             (with-open [tx (DefaultTransaction.)]
+               (with-open [writer (.writer geopackage feature-entry true nil tx)]
+                 (loop []
+                   (when (.hasNext iter)
+                     (let [feature (.next iter)]
+                       (.setAttributes
+                        ^JDBCFeatureReader$ResultSetFeature (.next writer)
+                        ^java.util.List (emit-feature feature))
+                       (.write writer)
+                       (recur)))))
                (.commit tx))))
 
          ;; non-spatial data:
