@@ -213,7 +213,7 @@
 (t/deftest test-releases-head
   (let [n (atom 0)
 
-        ref (atom (java.lang.ref.WeakReference. n))
+        ref (atom nil)
         _ (println "Constructing seq")
         
         query-seq (iterator-seq
@@ -225,11 +225,14 @@
                         :long-string (str (repeat 100000 @n))})
                      
                      (hasNext [_]
-                       (let [gcd (nil? (.get @ref))]
-                         (when (> @n 32) (System/gc))
-                         (let [result (and
-                                       (< @n 100)
-                                       (or (< @n 33) (not gcd)))]
+                       (let [gcd (and @ref (nil? (.get @ref)))]
+                         ;; generally we make ~32 rows because the
+                         ;; iterator is chunked so it will ask for the
+                         ;; next 32 items as soon as we want the first
+                         ;; and we only get gced once the call to
+                         ;; write has got so far.
+                         (when (> @n 30) (System/gc))
+                         (let [result (and (< @n 100) (not gcd))]
                            result)))))
         
         out-file (java.io.File/createTempFile "test" ".gpkg")]
@@ -243,7 +246,7 @@
                   ["long-string" {:type :string :accessor :long-string}]]
                  :batch-insert-size 1)
       (t/testing "The sequence head got garbage collected after we started writing"
-        (t/is (< @n 100)))
+        (t/is (< @n 90)))
       (finally (io/delete-file out-file true)))))
 
 
