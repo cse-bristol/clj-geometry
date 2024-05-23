@@ -441,8 +441,8 @@
    
    Returns nil.
   "
-  ([file table-name features & {:keys [schema batch-insert-size]
-                                :or {batch-insert-size 4000}}]
+  ([file table-name ^java.lang.Iterable features & {:keys [schema batch-insert-size]
+                                                    :or {batch-insert-size 4000}}]
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [spec (vec (or schema (infer-spec (first features))))
            [geom-field {:keys [srid]
@@ -460,20 +460,21 @@
              (catch java.lang.IllegalArgumentException _))
 
            ;; TODO should we have a transaction around the whole lot?
-           (with-open [tx (DefaultTransaction.)]
-             (try
-               (with-open [writer (.writer geopackage feature-entry true nil tx)]
-                 (run!
-                  (fn [feature]
-                    (let [n ^JDBCFeatureReader$ResultSetFeature (.next writer)]
-                      (.setAttributes
-                       n
-                       ^java.util.List (mapv (fn [getter] (getter feature)) getters)))
-                    (.write writer))
-                  features))
-
-               (.commit tx)
-               (catch Exception e (.rollback tx) (throw e)))))
+           (let [iterator (.iterator features)]
+             (with-open [tx (DefaultTransaction.)]
+               (try
+                 (with-open [writer (.writer geopackage feature-entry true nil tx)]
+                   (loop []
+                     (when (.hasNext iterator)
+                       (let [feature (.next iterator)]
+                         (let [n ^JDBCFeatureReader$ResultSetFeature (.next writer)]
+                           (.setAttributes
+                            n
+                            ^java.util.List (mapv (fn [getter] (getter feature)) getters)))
+                         (.write writer)
+                         (recur)))))
+                 (.commit tx)
+                 (catch Exception e (.rollback tx) (throw e))))))
 
          ;; non-spatial data:
          (let [quote-name (fn [s] (str "\"" (name s) "\""))
