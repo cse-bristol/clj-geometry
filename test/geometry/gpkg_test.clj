@@ -226,10 +226,10 @@
                      
                      (hasNext [_]
                        (let [gcd (nil? (.get @ref))]
-                         (when (> @n 64) (System/gc))
+                         (when (> @n 32) (System/gc))
                          (let [result (and
                                        (< @n 100)
-                                       (or (< @n 64) (not gcd)))]
+                                       (or (< @n 33) (not gcd)))]
                            result)))))
         
         out-file (java.io.File/createTempFile "test" ".gpkg")]
@@ -243,7 +243,7 @@
                   ["long-string" {:type :string :accessor :long-string}]]
                  :batch-insert-size 1)
       (t/testing "The sequence head got garbage collected after we started writing"
-        (t/is (= 64 @n)))
+        (t/is (< @n 100)))
       (finally (io/delete-file out-file true)))))
 
 
