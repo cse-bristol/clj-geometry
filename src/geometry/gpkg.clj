@@ -457,8 +457,9 @@
    
    Returns nil.
   "
-  ([file table-name features & {:keys [schema batch-insert-size]
-                                :or {batch-insert-size 4000}}]
+  ([file table-name ^Iterable features & {:keys [schema batch-insert-size]
+                                          :or {batch-insert-size 4000}}]
+   {:pre [(instance? java.lang.Iterable features)]}
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [spec (vec (or schema (infer-spec (first features))))
            [geom-field {:keys [srid]
@@ -484,7 +485,7 @@
            ;; reasons Neil & Tom were unable to discern that prevents
            ;; garbage collection of features (even though it looks
            ;; eligible for locals clearing).
-           (let [iter (.iterator features)]
+           (let [iter ^java.util.Iterator (.iterator ^java.lang.Iterable features)]
              ;; It is important that there are two with-opens here.
              ;; because the ordering of events has to be
              ;; (.close writer)
