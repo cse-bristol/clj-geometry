@@ -210,6 +210,43 @@
       (t/is (= #{["full" 1] ["full" 2] ["full" 9]}
                (set (map (juxt :table :bork) in)))))))
 
+(t/deftest test-releases-head
+  (let [n (atom 0)
+
+        ref (atom (java.lang.ref.WeakReference. n))
+        _ (println "Constructing seq")
+        
+        query-seq (iterator-seq
+                   (reify
+                     java.util.Iterator
+                     (next [_]
+                       (println "Generating" (swap! n inc))
+                       {:geometry (g/make-point [@n @n])
+                        :long-string (str (repeat 100000 @n))})
+                     
+                     (hasNext [_]
+                       (let [gcd (nil? (.get @ref))]
+                         (when (> @n 64) (System/gc))
+                         (let [result (and
+                                       (< @n 100)
+                                       (or (< @n 64) (not gcd)))]
+                           result)))))
+        
+        out-file (java.io.File/createTempFile "test" ".gpkg")]
+    (try
+      (reset! ref (java.lang.ref.WeakReference. query-seq))
+      (println "Calling write...")
+      (sut/write out-file "test"
+                 query-seq
+                 :schema
+                 [["geometry" {:type :point :srid 27700 :accessor :geometry}]
+                  ["long-string" {:type :string :accessor :long-string}]]
+                 :batch-insert-size 1)
+      (t/testing "The sequence head got garbage collected after we started writing"
+        (t/is (= 64 @n)))
+      (finally (io/delete-file out-file true)))))
+
+
 (comment
   (with-open [gpkg (sut/open "/tmp/hnzp-1966294190446547555/Data/oproad_gb.gpkg" :table-name "road_link")
               f (io/writer "/tmp/hnzp-1966294190446547555/test.txt")]
@@ -217,3 +254,5 @@
       (.write f (get row "id"))
       (.write f "\n")))
   )
+
+

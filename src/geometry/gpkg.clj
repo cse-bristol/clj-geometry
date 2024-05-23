@@ -485,7 +485,8 @@
            ;; reasons Neil & Tom were unable to discern that prevents
            ;; garbage collection of features (even though it looks
            ;; eligible for locals clearing).
-           (let [iter ^java.util.Iterator (.iterator ^java.lang.Iterable features)]
+           (let [features (or features [])
+                 iter ^java.util.Iterator (.iterator ^java.lang.Iterable features)]
              ;; It is important that there are two with-opens here.
              ;; because the ordering of events has to be
              ;; (.close writer)
