@@ -459,7 +459,8 @@
   "
   ([file table-name ^Iterable features & {:keys [schema batch-insert-size]
                                           :or {batch-insert-size 4000}}]
-   {:pre [(instance? java.lang.Iterable features)]}
+   {:pre [(or (nil? features)
+              (instance? java.lang.Iterable features))]}
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [spec (vec (or schema (infer-spec (first features))))
            [geom-field {:keys [srid]
