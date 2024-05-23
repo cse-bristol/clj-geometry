@@ -460,7 +460,8 @@
              (catch java.lang.IllegalArgumentException _))
 
            ;; TODO should we have a transaction around the whole lot?
-           (let [iterator (.iterator features)]
+           (let [features (or features [])
+                 iterator (.iterator ^java.lang.Iterable features)]
              (with-open [tx (DefaultTransaction.)]
                (try
                  (with-open [writer (.writer geopackage feature-entry true nil tx)]
