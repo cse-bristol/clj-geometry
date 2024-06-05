@@ -9,16 +9,62 @@
     SegmentString NodedSegmentString 
     SegmentStringDissolver SegmentStringDissolver$SegmentStringMerger]))
 
+(defn- do-snap-endpoints
+  "Snap the endpoints only of linear-features. This doesn't snap to a grid
+  Instead it moves any pair of endpoints that are this close to one another onto
+  one of the pair, in arbitrary order.
+
+  This may filter out features if they get collapsed to a single point."
+  [linear-features cm-precision]
+  (loop [inputs linear-features
+         outputs nil
+         index i/EMPTY]
+    (if (seq inputs)
+      (let [this-feature (first inputs)
+            [a b] (g/endpoints-of this-feature)
+            ai (first (i/query index a (/ cm-precision 100.0)))
+            bi (first (i/query index b (/ cm-precision 100.0)))]
+        (if (or (and ai (not= ai a)) (and bi (not= bi b)))
+          (let [c (g/make-coordinates this-feature)
+                _ (do (aset c 0 (g/coordinate (or ai a)))
+                      (aset c (dec (count c)) (g/coordinate (or bi b))))
+                g2 (g/make-valid (g/make-line-string c))]
+            (recur (rest inputs)
+                   (cond-> outputs
+                     (and (g/valid? g2)
+                          (not (g/empty-geom? g2))
+                          (g/line-string? g2))
+                     (conj (g/update-geometry this-feature g2)))
+                   (-> index (i/add (or ai a)) (i/add (or bi b)))))
+          (recur (rest inputs)
+                 (conj outputs this-feature)
+                 (-> index (i/add a) (i/add b)))))
+      outputs)))
+
 (defn node
   "Given a set of linear features, node and dissolve to a linework
   Returns a seq of linestrings, whose userdata will be maps having the key ::lines
-  which indicates the members of linear-features that went in."
+  which indicates the members of linear-features that went in.
+
+  named args are
+  `:get-meta` and `:merge-meta`; used to transfer metadata onto the new linestrings
+  `:cm-precision`; precision in cm (assuming CRS is in meters) for noding
+  `:snap-endpoints` if true, endpoints of all lines are snapped first.
+    This prevents tiny overlaps and closes tiny holes.
+
+  returns a set of linestrings, which have user-data per :merge-meta.
+  "
   [linear-features
-   & {:keys [get-meta merge-meta cm-precision]
+   & {:keys [get-meta merge-meta cm-precision snap-endpoints]
       :or {get-meta   (fn [x] {::lines [x]})
            merge-meta (fn [xs ys] {::lines (into (::lines xs) (::lines ys))})
-           cm-precision 10}}]
+           cm-precision 10
+           snap-endpoints true}}]
   (let [noder (SnapRoundingNoder. (g/fixed-precision-model cm-precision))
+
+        linear-features (cond-> linear-features
+                          snap-endpoints
+                          (do-snap-endpoints cm-precision))
         
         _ (.computeNodes
            noder

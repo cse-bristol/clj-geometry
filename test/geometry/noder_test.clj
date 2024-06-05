@@ -1,7 +1,9 @@
 (ns geometry.noder-test
   (:require [geometry.noder :as noder]
             [geometry.core :as g]
-            [clojure.test :refer :all]))
+            [geometry.gpkg :as gpkg]
+            [clojure.test :refer :all]
+            [clojure.java.io :as io]))
 
 (deftest plain-noding-test
   (let [lines [(g/make-line-string
@@ -60,3 +62,16 @@
     (is (= (g/make-point 6 1) (get mapping0 square)))
     (is (= (g/make-point 5 1) (get mapping1 square)))))
 
+(deftest node-snap-path-ends-test
+  (let [features (with-open [g (gpkg/open (io/as-file
+                                           (io/resource
+                                            "geometry/bad_path_test_case.gpkg")))]
+                   (doall (gpkg/features g)))
+        noded-features-no-snap (noder/node features :snap-endpoints false)
+        bad (set (map (comp count ::noder/lines g/user-data) noded-features-no-snap))
+        noded-features (noder/node features :snap-endpoints true)
+        good (set (map (comp count ::noder/lines g/user-data) noded-features))
+        
+        ]
+    (is (= #{1} good))
+    (is (not= #{1} bad))))
