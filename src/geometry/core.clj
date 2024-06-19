@@ -33,6 +33,7 @@
            [org.locationtech.jts.noding.snapround SnapRoundingNoder]
            [org.locationtech.jts.operation.buffer BufferOp BufferParameters]
            [org.locationtech.jts.operation.distance GeometryLocation]
+           [org.locationtech.jts.operation.linemerge LineMerger]
            [org.locationtech.jts.operation.overlay OverlayOp]
            [org.locationtech.jts.operation.overlayng OverlayNGRobust]
            [org.locationtech.jts.operation.polygonize Polygonizer]
@@ -453,6 +454,12 @@
     :multi-line-string   (single-geometries g)
     :geometry-collection (mapcat linearize (single-geometries g))
     []))
+
+(defn line-merge
+  [g]
+  (let [line-merger (new LineMerger)]
+    (.add line-merger (geometry g))
+    (.getMergedLineStrings line-merger)))
 
 (defn holes-of [g]
   (->> (polygons (geometry g))

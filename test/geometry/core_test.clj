@@ -71,12 +71,7 @@
                                        [(geom/make-line-string [[0 5] [10 5]])]))))))
 
 (deftest union-test
-  (is (= (norm-all (geom/line-strings (geom/union (geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
-                                                  (geom/read-wkt "LINESTRING (3 0, 3 10)"))))
-         (norm-all (geom/line-strings (geom/union (geom/make-collection
-                                                   [(geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
-                                                    (geom/read-wkt "LINESTRING (3 0, 3 10)")]))))
-         (norm-all (map geom/read-wkt ["LINESTRING (0 0, 3 3)"
+  (is (= (norm-all (map geom/read-wkt ["LINESTRING (0 0, 3 3)"
                                        "LINESTRING (3 3, 5 5)"
                                        "LINESTRING (5 5, 10 10)"
                                        "LINESTRING (10 0, 5 5)"
@@ -84,16 +79,21 @@
                                        "LINESTRING (3 7, 0 10)"
                                        "LINESTRING (3 0, 3 3)"
                                        "LINESTRING (3 3, 3 7)"
-                                       "LINESTRING (3 7, 3 10)"])))))
+                                       "LINESTRING (3 7, 3 10)"]))
+         (norm-all (geom/line-strings (geom/union (geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
+                                                  (geom/read-wkt "LINESTRING (3 0, 3 10)"))))
+         (norm-all (geom/line-strings (geom/union (geom/make-collection
+                                                   [(geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
+                                                    (geom/read-wkt "LINESTRING (3 0, 3 10)")])))))))
 
 (deftest intersection-test
-  (is (= (geom/intersection (geom/read-wkt "LINESTRING (0 0, 3 3)")
-                            (geom/read-wkt "LINESTRING (0 0, 3 3)"))
-         (geom/read-wkt "LINESTRING (0 0, 3 3)")))
+  (is (= (geom/read-wkt "LINESTRING (0 0, 3 3)")
+         (geom/intersection (geom/read-wkt "LINESTRING (0 0, 3 3)")
+                            (geom/read-wkt "LINESTRING (0 0, 3 3)"))))
 
-  (is (= (geom/intersection (geom/read-wkt "LINESTRING (0 0, 3 3)")
-                            (geom/read-wkt "LINESTRING (3 0, 0 3)"))
-         (geom/read-wkt "POINT (1.5 1.5)"))))
+  (is (= (geom/read-wkt "POINT (1.5 1.5)")
+         (geom/intersection (geom/read-wkt "LINESTRING (0 0, 3 3)")
+                            (geom/read-wkt "LINESTRING (3 0, 0 3)")))))
 
 (deftest overlay-robustness-test
   (testing "Should be able to do overlay operations even when at the limits of floating point accuracy. These tests fail without OverlayNGRobust"
@@ -120,3 +120,20 @@
     (is (geom/valid? (geom/buffer (geom/buffer p -30 2 :square :mitre 2) 45 2 :square :mitre 2))))
   (let [p (geom/read-wkt (slurp (io/resource "geometry/polygon2.wkt")))]
     (is (geom/valid? (geom/buffer (geom/buffer p -10 2 :square :mitre 2) 15 2 :square :mitre 2)))))
+
+(deftest line-merge-test
+  (is (= [(geom/read-wkt "LINESTRING (0 0, 3 3, 5 5, 3 1)")]
+         (geom/line-merge (geom/make-collection [(geom/read-wkt "LINESTRING (0 0, 3 3)")
+                                                 (geom/read-wkt "LINESTRING (3 3, 5 5)")
+                                                 (geom/read-wkt "LINESTRING (5 5, 3 1)")]))))
+  (is (= [(geom/read-wkt "LINESTRING (0 0, 3 3)") (geom/read-wkt "LINESTRING (0 5, 5 5)")]
+         (geom/line-merge (geom/make-collection [(geom/read-wkt "LINESTRING (0 0, 3 3)")
+                                                 (geom/read-wkt "LINESTRING (0 5, 5 5)")]))))
+  (is (= [(geom/read-wkt "LINESTRING (0 0, 0 1, 0 5)")
+          (geom/read-wkt "LINESTRING (0 10, 10 10)")
+          (geom/read-wkt "LINESTRING (1 1, 1 5, 8 7)")]
+         (geom/line-merge (geom/make-collection [(geom/read-wkt "LINESTRING (0 0, 0 1)")
+                                                 (geom/read-wkt "LINESTRING (0 1, 0 5)")
+                                                 (geom/read-wkt "LINESTRING (1 1, 1 5)")
+                                                 (geom/read-wkt "LINESTRING (1 5, 8 7)")
+                                                 (geom/read-wkt "LINESTRING (0 10, 10 10)")])))))
