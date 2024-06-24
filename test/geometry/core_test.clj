@@ -2,10 +2,8 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [geometry.core :as geom]
-            [geometry.feature :as f]))
-
-(defn- norm-all [gs]
-  (map geom/normalize gs))
+            [geometry.feature :as f]
+            [geometry.testutils :refer [g=]]))
 
 (deftest types-test
   (testing "test no spelling mistakes in the type test functions"
@@ -65,26 +63,26 @@
 
 (deftest cut-polygon-test
   (testing "should cut a polygon"
-    (is (= (norm-all [(geom/make-polygon [[0 0] [0 5] [10 5] [10 0] [0 0]])
-                      (geom/make-polygon [[0 5] [0 10] [10 10] [10 5] [0 5]])])
-           (norm-all (geom/cut-polygon (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]])
-                                       [(geom/make-line-string [[0 5] [10 5]])]))))))
+    (is (g= [(geom/make-polygon [[0 0] [0 5] [10 5] [10 0] [0 0]])
+             (geom/make-polygon [[0 5] [0 10] [10 10] [10 5] [0 5]])]
+            (geom/cut-polygon (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]])
+                              [(geom/make-line-string [[0 5] [10 5]])])))))
 
 (deftest union-test
-  (is (= (norm-all (map geom/read-wkt ["LINESTRING (0 0, 3 3)"
-                                       "LINESTRING (3 3, 5 5)"
-                                       "LINESTRING (5 5, 10 10)"
-                                       "LINESTRING (10 0, 5 5)"
-                                       "LINESTRING (5 5, 3 7)"
-                                       "LINESTRING (3 7, 0 10)"
-                                       "LINESTRING (3 0, 3 3)"
-                                       "LINESTRING (3 3, 3 7)"
-                                       "LINESTRING (3 7, 3 10)"]))
-         (norm-all (geom/line-strings (geom/union (geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
-                                                  (geom/read-wkt "LINESTRING (3 0, 3 10)"))))
-         (norm-all (geom/line-strings (geom/union (geom/make-collection
-                                                   [(geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
-                                                    (geom/read-wkt "LINESTRING (3 0, 3 10)")])))))))
+  (is (g= (map geom/read-wkt ["LINESTRING (0 0, 3 3)"
+                              "LINESTRING (3 3, 5 5)"
+                              "LINESTRING (5 5, 10 10)"
+                              "LINESTRING (10 0, 5 5)"
+                              "LINESTRING (5 5, 3 7)"
+                              "LINESTRING (3 7, 0 10)"
+                              "LINESTRING (3 0, 3 3)"
+                              "LINESTRING (3 3, 3 7)"
+                              "LINESTRING (3 7, 3 10)"])
+         (geom/line-strings (geom/union (geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
+                                        (geom/read-wkt "LINESTRING (3 0, 3 10)")))
+         (geom/line-strings (geom/union (geom/make-collection
+                                         [(geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
+                                          (geom/read-wkt "LINESTRING (3 0, 3 10)")]))))))
 
 (deftest intersection-test
   (is (= (geom/read-wkt "LINESTRING (0 0, 3 3)")
