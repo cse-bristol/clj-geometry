@@ -37,7 +37,8 @@
            [org.locationtech.jts.operation.overlay OverlayOp]
            [org.locationtech.jts.operation.overlayng OverlayNGRobust]
            [org.locationtech.jts.operation.polygonize Polygonizer]
-           [org.locationtech.jts.precision GeometryPrecisionReducer]))
+           [org.locationtech.jts.precision GeometryPrecisionReducer]
+           [org.locationtech.jts.densify Densifier]))
 
 (def ^:private ^org.locationtech.jts.geom.CoordinateSequenceFactory patched-csf
   "This amended coordinate sequence factory is required so we get
@@ -261,15 +262,17 @@
                                            (join-styles join-style)
                                            mitre-limit))))))
 
-(defn length ^double [g] (.getLength (geometry g)))
-(defn area ^double [g] (.getArea (geometry g)))
 (defn intersects? ^Boolean [a b] (.intersects (geometry a) (geometry b)))
 (defn touches? ^Boolean [a b] (.touches (geometry a) (geometry b)))
 (defn covers? ^Boolean [a b] (.covers (geometry a) (geometry b)))
 (defn overlaps? ^Boolean [a b] (.overlaps (geometry a) (geometry b)))
+(defn contains? ^Boolean [a b] (.contains (geometry a) (geometry b)))
+(defn relates? ^Boolean [a b ^String m] (.relate (geometry a) (geometry b) m))
+
+(defn length ^double [g] (.getLength (geometry g)))
+(defn area ^double [g] (.getArea (geometry g)))
 (defn distance ^double [a b] (.distance (geometry a) (geometry b)))
 (defn empty-geom? ^Boolean [g] (.isEmpty (geometry g)))
-(defn relates? ^Boolean [a b ^String m] (.relate (geometry a) (geometry b) m))
 
 ;; other operations
 
@@ -586,6 +589,58 @@
             part (single-geometries (difference part holes))]
         part))))
 
+(defn cut-line 
+  "Cut a linestring or linear ring with a geometry. The geometry will be 
+   linearized before use. The line will be cut at every point where the 
+   cutter intersects the line.
+   
+   If any individual intersection of the cutter with the line is linear,
+   the line will be cut at the start and end of the linear intersection.
+   
+   Returns a sequence of linear geometries."
+  [line cutter]
+  {:pre [(#{:line-string :linear-ring} (geometry-type line))]}
+  (let [lil (new org.locationtech.jts.linearref.LengthIndexedLine line)
+        cutter (->> cutter
+                    (linearize)
+                    (mapcat line-strings-of)
+                    (make-multi-line-string))
+        ;; find the points where the cutter intersects the line
+        ;; if any intersects are linear, we take their start and end points
+        intersect-points (->> (intersection line cutter)
+                              (single-geometries)
+                              (remove empty-geom?)
+                              (mapcat #(case (geometry-type %)
+                                         :point [%]
+                                         :line-string (endpoints-of %))))
+        ;; convert them to length-based indexes on the line
+        intersect-indices (->> intersect-points
+                               (map coordinate)
+                               (mapv #(.indexOf lil %)))
+        ;; if it's not a ring, add the start and end of the line
+        intersect-indices (->> (if (= (geometry-type line) :linear-ring)
+                                 intersect-indices
+                                 (concat intersect-indices [(.getStartIndex lil) (.getEndIndex lil)]))
+                               (set)
+                               (sort))
+
+        ;; for each pair of indexes, extract the connecting line:
+        segments (->> intersect-indices
+                      (map (fn [i1 i2] (.extractLine lil i1 i2))
+                           (next intersect-indices)))]
+    ;; for rings, we have to add the final segment that crosses the start and end index back in:
+    (if (= (geometry-type line) :linear-ring)
+      (if (empty? segments)
+        [line]
+        (conj segments (-> [(.extractLine lil (apply max intersect-indices) (.getEndIndex lil))
+                            (.extractLine lil (.getStartIndex lil) (apply min intersect-indices))]
+                           make-multi-line-string
+                           line-merge
+                           first)))
+      (if (empty? segments)
+        [line]
+        segments))))
+
 (defn normalize [g]
   (update-geometry g (.norm (geometry g))))
 
@@ -594,3 +649,23 @@
   [g]
   (let [g (geometry g)]
     (* 4 Math/PI (/ (area g) (Math/pow (.getLength g) 2)))))
+
+(defn densify 
+  "Densify a geometry by inserting extra vertices along the line segments contained in 
+   the geometry. All segments in the created densified geometry will be no longer than 
+   `max-len`."
+  [g max-len]
+  (update-geometry g (Densifier/densify (geometry g) max-len)))
+
+;; envelopes
+
+(defn envelope-of ^org.locationtech.jts.geom.Envelope [g]
+  (.getEnvelopeInternal (geometry g)))
+
+(defn envelope->polygon [^org.locationtech.jts.geom.Envelope e]
+  (normalize
+   (make-polygon [[(.getMinX e) (.getMinY e)]
+                  [(.getMaxX e) (.getMinY e)]
+                  [(.getMaxX e) (.getMaxY e)]
+                  [(.getMinX e) (.getMaxY e)]
+                  [(.getMinX e) (.getMinY e)]])))

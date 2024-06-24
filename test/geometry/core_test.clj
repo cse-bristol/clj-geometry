@@ -137,3 +137,50 @@
                                                  (geom/read-wkt "LINESTRING (1 1, 1 5)")
                                                  (geom/read-wkt "LINESTRING (1 5, 8 7)")
                                                  (geom/read-wkt "LINESTRING (0 10, 10 10)")])))))
+
+(deftest cut-line-test
+  (testing "no intersections"
+    (is
+     (= [(geom/read-wkt "LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")]
+        (geom/cut-line (geom/make-line-string [[0 0] [0 10] [10 10] [10 0] [0 0]])
+                       (geom/make-line-string [[-1 -1] [10 -1]])))))
+  
+  (testing "no intersections linear ring"
+    (is
+     (= [(geom/read-wkt "LINEARRING (0 0, 0 10, 10 10, 10 0, 0 0)")]
+        (geom/cut-line (geom/boundary-of (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]]))
+                       (geom/make-line-string [[-1 -1] [10 -1]])))))
+
+  (testing "one intersection in linestring"
+    (is
+     (= [(geom/read-wkt "LINESTRING (0 2, 0 0)")
+         (geom/read-wkt "LINESTRING (1 0, 10 0, 10 10, 0 10, 0 2)")
+         (geom/read-wkt "LINESTRING (0 0, 1 0)")]
+        (geom/cut-line (geom/make-line-string [[0 0] [0 10] [10 10] [10 0] [0 0]])
+                       (geom/make-line-string [[-1 -1] [1 5] [1 -1]])))))
+
+  (testing "one intersection in linear ring"
+    (is
+     (= [(geom/read-wkt "LINESTRING (1 0, 0 0, 0 2)")
+         (geom/read-wkt "LINESTRING (1 0, 10 0, 10 10, 0 10, 0 2)")]
+        (geom/cut-line (geom/boundary-of (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]]))
+                       (geom/make-line-string [[-1 -1] [1 5] [1 -1]])))))
+
+  (testing "two intersections in linestring"
+    (is
+     (= [(geom/read-wkt "LINESTRING (0 2, 0 0)")
+         (geom/read-wkt "LINESTRING (3 0, 10 0, 10 10, 0 10, 0 2)")
+         (geom/read-wkt "LINESTRING (1.3333333333333357 0, 3 0)")
+         (geom/read-wkt "LINESTRING (1 0, 1.3333333333333357 0)")
+         (geom/read-wkt "LINESTRING (0 0, 1 0)")]
+        (geom/cut-line (geom/make-line-string [[0 0] [0 10] [10 10] [10 0] [0 0]])
+                       (geom/make-line-string [[-1 -1] [1 5] [1 -1] [3 5] [3 -1]])))))
+
+  (testing "two intersections in linear ring, one goes round the other"
+    (is 
+     (= [(geom/read-wkt "LINESTRING (1 0, 0 0, 0 2)")
+         (geom/read-wkt "LINESTRING (0 6, 0 2)")
+         (geom/read-wkt "LINESTRING (1.2857142857142847 0, 10 0, 10 10, 0 10, 0 6)")
+         (geom/read-wkt "LINESTRING (1 0, 1.2857142857142847 0)")]
+        (geom/cut-line (geom/boundary-of (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]]))
+                       (geom/make-line-string [[-1 -1] [1 5] [1 -1] [3 6] [-1 6]]))))))
