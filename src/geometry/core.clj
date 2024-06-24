@@ -236,8 +236,9 @@
       (let [buffed (if (#{:polygon :multi-polygon} (geometry-type g))
                      (.buffer (geometry g) 0.0)
                      g)]
-        (if (valid? buffed) buffed
-            (update-geometry buffed (GeometryFixer/fix (geometry buffed)))))))
+        (if (valid? buffed)
+          (update-geometry g buffed)
+          (update-geometry g (GeometryFixer/fix (geometry g)))))))
 
 (def end-cap-styles {:round 1 :flat 2 :square 3})
 (def join-styles {:round 1 :mitre 2 :bevel 3})
