@@ -15,9 +15,9 @@
   "Compare geometries/Features or sequences of geometries/Features for equality. 
    If they are Features, their fields will *not* be ignored."
   [& args]
-  `(apply = (map (fn [g] (if sequential? g
-                             (map geometry.core/normalize g)
-                             (geometry.core/normalize g)))
+  `(apply = (map (fn [g#] (if (sequential? g#)
+                             (map geometry.core/normalize g#)
+                             (geometry.core/normalize g#)))
                  ~(vec args))))
 
 (defn circle
