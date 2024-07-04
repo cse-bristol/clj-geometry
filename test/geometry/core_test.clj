@@ -2,10 +2,8 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [geometry.core :as geom]
-            [geometry.feature :as f]))
-
-(defn- norm-all [gs]
-  (map geom/normalize gs))
+            [geometry.feature :as f]
+            [geometry.testutils :refer [g=]]))
 
 (deftest types-test
   (testing "test no spelling mistakes in the type test functions"
@@ -65,26 +63,26 @@
 
 (deftest cut-polygon-test
   (testing "should cut a polygon"
-    (is (= (norm-all [(geom/make-polygon [[0 0] [0 5] [10 5] [10 0] [0 0]])
-                      (geom/make-polygon [[0 5] [0 10] [10 10] [10 5] [0 5]])])
-           (norm-all (geom/cut-polygon (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]])
-                                       [(geom/make-line-string [[0 5] [10 5]])]))))))
+    (is (g= [(geom/make-polygon [[0 0] [0 5] [10 5] [10 0] [0 0]])
+             (geom/make-polygon [[0 5] [0 10] [10 10] [10 5] [0 5]])]
+            (geom/cut-polygon (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]])
+                              [(geom/make-line-string [[0 5] [10 5]])])))))
 
 (deftest union-test
-  (is (= (norm-all (map geom/read-wkt ["LINESTRING (0 0, 3 3)"
-                                       "LINESTRING (3 3, 5 5)"
-                                       "LINESTRING (5 5, 10 10)"
-                                       "LINESTRING (10 0, 5 5)"
-                                       "LINESTRING (5 5, 3 7)"
-                                       "LINESTRING (3 7, 0 10)"
-                                       "LINESTRING (3 0, 3 3)"
-                                       "LINESTRING (3 3, 3 7)"
-                                       "LINESTRING (3 7, 3 10)"]))
-         (norm-all (geom/line-strings (geom/union (geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
-                                                  (geom/read-wkt "LINESTRING (3 0, 3 10)"))))
-         (norm-all (geom/line-strings (geom/union (geom/make-collection
-                                                   [(geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
-                                                    (geom/read-wkt "LINESTRING (3 0, 3 10)")])))))))
+  (is (g= (map geom/read-wkt ["LINESTRING (0 0, 3 3)"
+                              "LINESTRING (3 3, 5 5)"
+                              "LINESTRING (5 5, 10 10)"
+                              "LINESTRING (10 0, 5 5)"
+                              "LINESTRING (5 5, 3 7)"
+                              "LINESTRING (3 7, 0 10)"
+                              "LINESTRING (3 0, 3 3)"
+                              "LINESTRING (3 3, 3 7)"
+                              "LINESTRING (3 7, 3 10)"])
+         (geom/line-strings (geom/union (geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
+                                        (geom/read-wkt "LINESTRING (3 0, 3 10)")))
+         (geom/line-strings (geom/union (geom/make-collection
+                                         [(geom/read-wkt "MULTILINESTRING ((0 0, 10 10), (10 0, 0 10))")
+                                          (geom/read-wkt "LINESTRING (3 0, 3 10)")]))))))
 
 (deftest intersection-test
   (is (= (geom/read-wkt "LINESTRING (0 0, 3 3)")
@@ -137,3 +135,68 @@
                                                  (geom/read-wkt "LINESTRING (1 1, 1 5)")
                                                  (geom/read-wkt "LINESTRING (1 5, 8 7)")
                                                  (geom/read-wkt "LINESTRING (0 10, 10 10)")])))))
+
+(deftest cut-line-test
+  (testing "no intersections"
+    (is
+     (= [(geom/read-wkt "LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)")]
+        (geom/cut-line (geom/make-line-string [[0 0] [0 10] [10 10] [10 0] [0 0]])
+                       (geom/make-line-string [[-1 -1] [10 -1]])))))
+  
+  (testing "no intersections linear ring"
+    (is
+     (= [(geom/read-wkt "LINEARRING (0 0, 0 10, 10 10, 10 0, 0 0)")]
+        (geom/cut-line (geom/boundary-of (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]]))
+                       (geom/make-line-string [[-1 -1] [10 -1]])))))
+
+  (testing "one intersection in linestring"
+    (is
+     (= [(geom/read-wkt "LINESTRING (0 2, 0 0)")
+         (geom/read-wkt "LINESTRING (1 0, 10 0, 10 10, 0 10, 0 2)")
+         (geom/read-wkt "LINESTRING (0 0, 1 0)")]
+        (geom/cut-line (geom/make-line-string [[0 0] [0 10] [10 10] [10 0] [0 0]])
+                       (geom/make-line-string [[-1 -1] [1 5] [1 -1]])))))
+
+  (testing "one intersection in linear ring"
+    (is
+     (= [(geom/read-wkt "LINESTRING (1 0, 0 0, 0 2)")
+         (geom/read-wkt "LINESTRING (1 0, 10 0, 10 10, 0 10, 0 2)")]
+        (geom/cut-line (geom/boundary-of (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]]))
+                       (geom/make-line-string [[-1 -1] [1 5] [1 -1]])))))
+
+  (testing "two intersections in linestring"
+    (is
+     (= [(geom/read-wkt "LINESTRING (0 2, 0 0)")
+         (geom/read-wkt "LINESTRING (3 0, 10 0, 10 10, 0 10, 0 2)")
+         (geom/read-wkt "LINESTRING (1.3333333333333357 0, 3 0)")
+         (geom/read-wkt "LINESTRING (1 0, 1.3333333333333357 0)")
+         (geom/read-wkt "LINESTRING (0 0, 1 0)")]
+        (geom/cut-line (geom/make-line-string [[0 0] [0 10] [10 10] [10 0] [0 0]])
+                       (geom/make-line-string [[-1 -1] [1 5] [1 -1] [3 5] [3 -1]])))))
+
+  (testing "two intersections in linear ring, one goes round the other"
+    (is 
+     (= [(geom/read-wkt "LINESTRING (1 0, 0 0, 0 2)")
+         (geom/read-wkt "LINESTRING (0 6, 0 2)")
+         (geom/read-wkt "LINESTRING (1.2857142857142847 0, 10 0, 10 10, 0 10, 0 6)")
+         (geom/read-wkt "LINESTRING (1 0, 1.2857142857142847 0)")]
+        (geom/cut-line (geom/boundary-of (geom/make-polygon [[0 0] [0 10] [10 10] [10 0] [0 0]]))
+                       (geom/make-line-string [[-1 -1] [1 5] [1 -1] [3 6] [-1 6]]))))))
+
+(deftest smooth-test
+  (is (= (geom/read-wkt "LINESTRING EMPTY")
+         (geom/smooth (geom/make-line-string []) 1)))
+  
+  (testing "Does nothing to lines with 2 coords"
+    (is (= (geom/make-line-string [[0 0] [0 10]])
+           (geom/smooth (geom/make-line-string [[0 0] [0 10]]) 1))))
+  
+  (testing "Smooths more the more iterations are specified"
+    (is (= (geom/read-wkt "LINESTRING (0 0, 0 7.5, 2.5 10, 10 10)")
+           (geom/smooth (geom/make-line-string [[0 0] [0 10] [10 10]]) 1)))
+    
+    (is (= (geom/read-wkt "LINESTRING (0 0, 0 4.21875, 0.15625 6.25, 0.46875 7.5, 0.9375 8.4375, 1.5625 9.0625, 2.5 9.53125, 3.75 9.84375, 5.78125 10, 10 10)")
+           (geom/smooth (geom/make-line-string [[0 0] [0 10] [10 10]]) 3)))
+    
+    (is (= (geom/read-wkt "LINESTRING (0 0, 0 2.373046875, 0.009765625 3.5546875, 0.029296875 4.3359375, 0.05859375 4.98046875, 0.09765625 5.48828125, 0.146484375 5.947265625, 0.205078125 6.357421875, 0.2734375 6.71875, 0.3515625 7.03125, 0.439453125 7.32421875, 0.537109375 7.59765625, 0.64453125 7.8515625, 0.76171875 8.0859375, 0.888671875 8.30078125, 1.025390625 8.49609375, 1.171875 8.671875, 1.328125 8.828125, 1.50390625 8.974609375, 1.69921875 9.111328125, 1.9140625 9.23828125, 2.1484375 9.35546875, 2.40234375 9.462890625, 2.67578125 9.560546875, 2.96875 9.6484375, 3.28125 9.7265625, 3.642578125 9.794921875, 4.052734375 9.853515625, 4.51171875 9.90234375, 5.01953125 9.94140625, 5.6640625 9.970703125, 6.4453125 9.990234375, 7.626953125 10, 10 10)")
+           (geom/smooth (geom/make-line-string [[0 0] [0 10] [10 10]]) 5)))))
