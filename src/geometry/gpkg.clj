@@ -64,8 +64,9 @@
           (finally 
             (.dispose store)
             (.close geopackage))))
-      (with-open [conn (jdbc/get-connection (format "jdbc:sqlite:%s"
-                                                    (.getCanonicalPath (io/as-file file))))]
+      (with-open [conn (jdbc/get-connection
+                        {:dbtype "sqlite"
+                         :dbname (.getCanonicalPath (io/as-file file))})]
         (jdbc/with-transaction [tx conn]
           (let [q (if include-system?
                     "SELECT name FROM sqlite_master WHERE type IN ('table','view')"

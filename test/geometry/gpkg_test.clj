@@ -189,6 +189,9 @@
 
       (t/is (= #{"test-table" "data-table"}
                (sut/table-names f)))
+
+      (t/is (= #{"test-table"}
+               (sut/table-names f :spatial-only? true)))
             
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
