@@ -25,7 +25,7 @@
   if any columns have null values in the first row. In that case you
   will do well to supply the :schema argument to write.
   "
-  
+
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [geometry.core :as g]
@@ -39,7 +39,7 @@
            [org.geotools.geopkg FeatureEntry GeoPackage]
            [org.geotools.jdbc JDBCDataStore JDBCFeatureStore]
            [org.geotools.referencing CRS]
-           [org.locationtech.jts.geom Geometry]
+           [org.locationtech.jts.geom Geometry Envelope]
            [org.opengis.referencing.operation MathTransform]
            [org.geotools.jdbc JDBCFeatureReader$ResultSetFeature]
            [org.sqlite
@@ -61,7 +61,7 @@
                     "database" (.getCanonicalPath (io/as-file file))})]
         (try
           (set (.getTypeNames store))
-          (finally 
+          (finally
             (.dispose store)
             (.close geopackage))))
       (with-open [conn (jdbc/get-connection
@@ -70,7 +70,7 @@
         (jdbc/with-transaction [tx conn]
           (let [q (if include-system?
                     "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
-                    "SELECT name FROM sqlite_master WHERE type IN ('table','view') 
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')
                      AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'gpkg_%'
                      AND name NOT LIKE 'rtree_%'")]
             (->> (jdbc/execute! tx [q])
@@ -86,7 +86,7 @@
 (defn- gpkg-iterator
   "Returns a Closable Iterator over a geotools FeatureIterator
    for the features in the table.
-   
+
    Internal implementation detail of gpkg/open."
   [^JDBCFeatureStore source table-name crs ^MathTransform crs-transform key-transform]
   (let [features (-> source
@@ -122,7 +122,7 @@
 (defn- sqlite-iterator
   "Returns a Closable Iterator over a ResultSet containing all
    the rows and columns in the table.
-   
+
    Internal implementation detail of gpkg/open."
   [^java.io.File file ^String table key-transform]
   (let [ds   (jdbc/get-datasource
@@ -166,27 +166,27 @@
         (.close stmt)
         (.close conn)))))
 
-(defn features 
+(defn features
   "Given the result of calling `gpkg/open`, convert the closable iterator
-   that returns into a lazy sequence of features. This is just a wrapper around 
+   that returns into a lazy sequence of features. This is just a wrapper around
    iterator-seq."
   [gpkg]
   (iterator-seq gpkg))
 
-(defn open 
+(defn open
   "The result of gpkg/open is a closeable iterator. It can be turned into
-   a lazy sequence using gpkg/features (which is just a wrapper around 
+   a lazy sequence using gpkg/features (which is just a wrapper around
    iterator-seq).
    The entries of the iterator are geometry.feature/Feature instances,
    so they have a :geometry, :table :crs, and then contain whatever
    columns are in the geopackage table they came from.
-   
+
    (with-open [h (gpkg/open my-file)]
      (doseq [f (gpkg/features h)]
         (println f)))
-   
+
    If you know the geometries have a certain precision, you can
-   pass a GeometryFactory with a PrecisionModel set. If you do 
+   pass a GeometryFactory with a PrecisionModel set. If you do
    not know the precision of the geometries, but want them to be
    of a certain precision, use core/change-precision instead."
   [gpkg & {:keys [table-name to-crs key-transform geometry-factory spatial-only?]
@@ -254,7 +254,7 @@
                 (when iterator (.close iterator))
                 {:table nil :tables nil :iterator nil :closed false}))))
         ]
-    
+
     (reify
       java.lang.AutoCloseable
       (close [_]
@@ -263,7 +263,7 @@
                         (when-let [^java.io.Closeable i (:iterator state)] (.close i))
                         (assoc state :iterator nil :closed true)))
         (.dispose store))
-      
+
       java.util.Iterator
       (next [_]
         (let [state (vswap! state maybe-advance!)]
@@ -308,10 +308,10 @@
 
 (defn- infer-spec
   "Given a feature, get a spec for its fields inferring types from their values.
-  
+
   This function should probably only be used interactively or for hacking around,
   as it is not very safe if you might have nil values (which have no type)"
-  
+
   [feature]
   (cond (instance? geometry.feature.Feature feature)
         (let [keys (keys feature)]
@@ -325,13 +325,13 @@
                             (not= k :table)
                             (not= k :crs))]
              (kv-type k (get feature k)))))
-        
+
         (satisfies? g/HasGeometry feature)
         [["geometry"
           {:type Geometries/GEOMETRY
            :accessor g/geometry
            :srid (g/srid feature)}]]
-        
+
         (map? feature)
         (for [[k v] (sort-by (comp str first) feature)] (kv-type k v))
 
@@ -350,9 +350,9 @@
                 (str (* 1024 1024 1024)) ;; 1G
                 )))
 
-(defn- open-for-writing 
+(defn- open-for-writing
   "Open a gpkg for writing spatial data via the geotools APIs.
-   
+
    Also sets the batch insert size (via reflection)."
   ^GeoPackage [file batch-insert-size]
   (let [geopackage (GeoPackage. (io/as-file file) sqlite-config nil)]
@@ -363,7 +363,7 @@
         (.setBatchInsertSize ds batch-insert-size)))
     geopackage))
 
-(defn- spec-geom-field 
+(defn- spec-geom-field
   "Get the spec for the (first) geometry field from a schema."
   [spec]
   (first (filter
@@ -388,7 +388,7 @@
              (= :polygon type)))
           spec)))
 
-(defn- ->geotools-type 
+(defn- ->geotools-type
   "Convert a type specification from a schema into something that geotools can understand
    as a column type."
   [type]
@@ -419,7 +419,7 @@
 
     :else type))
 
-(defn- ->feature-entry 
+(defn- ->feature-entry
   "Create a geotools FeatureEntry (for our purposes a gpkg table definition)"
   [table-name spec]
   (let [geom-col (spec-geom-field spec)]
@@ -428,7 +428,7 @@
       (.setGeometryColumn (first geom-col))
       (.setGeometryType (->geotools-type (:type (second geom-col)))))))
 
-(defn- ->geotools-schema 
+(defn- ->geotools-schema
   "Create a geotools schema that defines the columns of a gpkg table."
   [table-name spec]
   (DataUtilities/createType
@@ -455,7 +455,7 @@
   :type is the canonical name of a java class, or just :String, or Geometries/GEOMETRY.
 
   Look at `infer-spec` for examples.
-   
+
    Returns nil.
   "
   ([file table-name ^Iterable features & {:keys [schema batch-insert-size]
@@ -464,19 +464,19 @@
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [spec (vec (or schema (infer-spec (first features))))
            [geom-field {:keys [srid]
-                        :or   {srid 27700}}] (spec-geom-field spec)]
+                        :or   {srid 27700}}] (spec-geom-field spec)
+           crs (CRS/decode (str "EPSG:" srid))
+           layer-extent (atom nil)]
        (if geom-field
          ;; spatial data:
          (let [emit-feature (let [getters
-                                   (vec (for [[k v] spec]
-                                          (or (:accessor v)
-                                              #(get % k))))]
-                               (fn [feature]
-                                 (mapv #(% feature) getters)))
-               feature-entry ^FeatureEntry (->feature-entry table-name spec)
-               ]
-           (.setBounds feature-entry
-                       (ReferencedEnvelope. 0 0 0 0 (CRS/decode (str "EPSG:" srid))))
+                                  (vec (for [[k v] spec]
+                                         (or (:accessor v)
+                                             #(get % k))))]
+                              (fn [feature]
+                                (mapv #(% feature) getters)))
+               feature-entry ^FeatureEntry (->feature-entry table-name spec)]
+           (.setBounds feature-entry (ReferencedEnvelope. 0 0 0 0 crs))
            (try
              (.create geopackage feature-entry (->geotools-schema table-name spec))
              (catch java.lang.IllegalArgumentException _))
@@ -497,13 +497,35 @@
                (with-open [writer (.writer geopackage feature-entry true nil tx)]
                  (loop []
                    (when (.hasNext iter)
-                     (let [feature (.next iter)]
+                     (let [feature (.next iter)
+                           geom (get feature "geometry")
+                           feature-env (Envelope. (if (g/point? geom)
+                                                    (.getCoordinate geom)
+                                                    (.getEnvelopeInternal geom)))]
+                       ;; Firstly, update the overall bounding box
+                       (if @layer-extent
+                         (.expandToInclude @layer-extent feature-env)
+                         (reset! layer-extent (ReferencedEnvelope. feature-env crs)))
                        (.setAttributes
                         ^JDBCFeatureReader$ResultSetFeature (.next writer)
                         ^java.util.List (emit-feature feature))
                        (.write writer)
                        (recur)))))
-               (.commit tx))))
+               (.commit tx)))
+
+           ;; Update the layer extent manually
+           (with-open [conn (org.sqlite.JDBC/createConnection (format "jdbc:sqlite:%s"
+                                                                      (.getCanonicalPath (io/as-file file)))
+                                                              (.toProperties sqlite-config))]
+             (let  [stmt (format "UPDATE gpkg_contents SET min_x = %s, min_y = %s, max_x = %s, max_y = %s
+                                      WHERE table_name = \"%s\";"
+                                 (.getMinX @layer-extent)
+                                 (.getMinY @layer-extent)
+                                 (.getMaxX @layer-extent)
+                                 (.getMaxY @layer-extent)
+                                 table-name)]
+               (jdbc/with-transaction [tx conn]
+                 (jdbc/execute! tx [stmt])))))
 
          ;; non-spatial data:
          (let [quote-name (fn [s] (str "\"" (name s) "\""))
