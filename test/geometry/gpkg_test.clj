@@ -261,7 +261,8 @@
       (sut/write
        f "test-table-points"
        [{"geometry" (g/make-point 1 2) "id" 1}
-        {"geometry" (g/make-point 4 5) "id" 2}]
+        {"geometry" (g/make-point 4 5) "id" 2}
+        {"geometry" nil "id" 3}]
 
        :schema
        {"geometry" {:type :point :srid 27700}

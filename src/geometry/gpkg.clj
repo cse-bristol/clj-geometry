@@ -48,6 +48,13 @@
             SQLiteConfig$Pragma
             SQLiteConfig$TransactionMode]))
 
+(defn- sqlite-query! [file query-params]
+  (with-open [conn (jdbc/get-connection
+                    {:dbtype "sqlite"
+                     :dbname (.getCanonicalPath (io/as-file file))})]
+    (jdbc/with-transaction [tx conn]
+      (jdbc/execute! tx query-params))))
+
 (defn table-names
   "Get the tables present in the geopackage or sqlite database, as a
    set of strings."
@@ -64,18 +71,14 @@
           (finally
             (.dispose store)
             (.close geopackage))))
-      (with-open [conn (jdbc/get-connection
-                        {:dbtype "sqlite"
-                         :dbname (.getCanonicalPath (io/as-file file))})]
-        (jdbc/with-transaction [tx conn]
-          (let [q (if include-system?
-                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
-                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')
+      (->> [(if include-system?
+               "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+               "SELECT name FROM sqlite_master WHERE type IN ('table','view')
                      AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'gpkg_%'
                      AND name NOT LIKE 'rtree_%'")]
-            (->> (jdbc/execute! tx [q])
-                 (map :sqlite_master/name)
-                 (set))))))))
+           (sqlite-query! file)
+           (map :sqlite_master/name)
+           (set)))))
 
 (defn- ->crs [x]
   (cond (string? x) (CRS/decode x true)
@@ -438,6 +441,23 @@
                   (let [type (->geotools-type type)]
                     (str name ":" type (when srid (str ":srid=" srid))))))))
 
+(defn- set-layer-extent!
+  "Update the extent (if not nil) for `table-name` in the geopackage at `file`
+
+  return `file` in case you want to thread"
+  [file table-name  ^ReferencedEnvelope layer-extent]
+  (when layer-extent
+    (sqlite-query!
+     file
+     ["UPDATE gpkg_contents SET min_x = ?, min_y = ?, max_x = ?, max_y = ? WHERE table_name = ?;"
+      (.getMinX layer-extent)
+      (.getMinY layer-extent)
+      (.getMaxX layer-extent)
+      (.getMaxY layer-extent)
+      table-name]))
+  
+  file)
+
 (defn write
   "Write the given sequence of `features` into a geopackage at `file`
   in a table called `table-name`
@@ -465,8 +485,7 @@
      (let [spec (vec (or schema (infer-spec (first features))))
            [geom-field {:keys [srid]
                         :or   {srid 27700}}] (spec-geom-field spec)
-           crs (CRS/decode (str "EPSG:" srid))
-           layer-extent (atom nil)]
+           crs (CRS/decode (str "EPSG:" srid))]
        (if geom-field
          ;; spatial data:
          (let [emit-feature (let [getters
@@ -487,45 +506,49 @@
            ;; garbage collection of features (even though it looks
            ;; eligible for locals clearing).
            (let [features (or features [])
-                 iter ^java.util.Iterator (.iterator ^java.lang.Iterable features)]
-             ;; It is important that there are two with-opens here.
-             ;; because the ordering of events has to be
-             ;; (.close writer)
-             ;; (.commit tx)
-             ;; (.close tx)
-             (with-open [tx (DefaultTransaction.)]
-               (with-open [writer (.writer geopackage feature-entry true nil tx)]
-                 (loop []
-                   (when (.hasNext iter)
-                     (let [feature (.next iter)
-                           geom (get feature "geometry")
-                           feature-env (Envelope. (if (g/point? geom)
-                                                    (.getCoordinate geom)
-                                                    (.getEnvelopeInternal geom)))]
-                       ;; Firstly, update the overall bounding box
-                       (if @layer-extent
-                         (.expandToInclude @layer-extent feature-env)
-                         (reset! layer-extent (ReferencedEnvelope. feature-env crs)))
-                       (.setAttributes
-                        ^JDBCFeatureReader$ResultSetFeature (.next writer)
-                        ^java.util.List (emit-feature feature))
-                       (.write writer)
-                       (recur)))))
-               (.commit tx)))
+                 iter ^java.util.Iterator (.iterator ^java.lang.Iterable features)
 
-           ;; Update the layer extent manually
-           (with-open [conn (org.sqlite.JDBC/createConnection (format "jdbc:sqlite:%s"
-                                                                      (.getCanonicalPath (io/as-file file)))
-                                                              (.toProperties sqlite-config))]
-             (let  [stmt (format "UPDATE gpkg_contents SET min_x = %s, min_y = %s, max_x = %s, max_y = %s
-                                      WHERE table_name = \"%s\";"
-                                 (.getMinX @layer-extent)
-                                 (.getMinY @layer-extent)
-                                 (.getMaxX @layer-extent)
-                                 (.getMaxY @layer-extent)
-                                 table-name)]
-               (jdbc/with-transaction [tx conn]
-                 (jdbc/execute! tx [stmt])))))
+                 ;; It is important that there are two with-opens here.
+                 ;; because the ordering of events has to be
+                 ;; (.close writer)
+                 ;; (.commit tx)
+                 ;; (.close tx)
+
+                 ^ReferencedEnvelope layer-extent
+                 (with-open [tx (DefaultTransaction.)]
+                   (let [extent
+                         (with-open [writer (.writer geopackage feature-entry true nil tx)]
+                           (loop [^ReferencedEnvelope extent nil]
+                             (if (.hasNext iter)
+                               (let [feature (.next iter)
+                                     ]
+                                 (.setAttributes
+                                  ^JDBCFeatureReader$ResultSetFeature (.next writer)
+                                  ^java.util.List (emit-feature feature))
+                                 (.write writer)
+                                 (recur
+                                  (let [^Geometry geom (get feature geom-field)
+                                        ^Envelope feature-env
+                                        (cond
+                                          (nil? geom) nil
+                                          (g/point? geom) (Envelope. (.getCoordinate geom))
+                                          :else (Envelope. (.getEnvelopeInternal geom)))]
+                                    (cond
+                                      (nil? feature-env) extent
+
+                                      (nil? extent) (ReferencedEnvelope. feature-env crs)
+
+                                      :else (doto extent (.expandToInclude feature-env))))
+                                  
+                                  ))
+                               extent ;; return extent
+                               )))]
+                     (.commit tx)
+                     extent ;; and return extent
+                     ))]
+
+             ;; Update the layer extent manually
+             (set-layer-extent! file table-name layer-extent)))
 
          ;; non-spatial data:
          (let [quote-name (fn [s] (str "\"" (name s) "\""))
