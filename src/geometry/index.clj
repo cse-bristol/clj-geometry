@@ -24,8 +24,7 @@
   Indexes are immutable persistent datastructures, so index/add and index/delete
   return a new index.
   "
-  (:require [geometry.core :as g]
-            [geometry.index :as index])
+  (:require [geometry.core :as g])
   (:import [com.github.davidmoten.rtree2 Entry RTree]
            [com.github.davidmoten.rtree2.geometry Geometries]
            [com.github.davidmoten.rtree2.internal EntryDefault]
