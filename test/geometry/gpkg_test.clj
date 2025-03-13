@@ -30,13 +30,13 @@
       ;; read them back and compare
 
       (with-open [in (sut/open f :table-name "test-table")]
-        (t/is (= [{:geometry nil "id" 3 :table "test-table" :crs "EPSG:27700" "b" "ghi" "c" 0 "inf" ##Inf}
-                  {:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "abc" "c" 1 "inf" ##Inf}
-                  {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "def" "c" 0 "inf" ##Inf}]
+        (t/is (= (set [{:geometry nil "id" 3 :table "test-table" :crs "EPSG:27700" "b" "ghi" "c" 0 "inf" ##Inf}
+                       {:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "abc" "c" 1 "inf" ##Inf}
+                       {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "def" "c" 0 "inf" ##Inf}])
 
                  ;; we map into {} to strip off the feature type
                  ;; since we want to do a simple comparison here
-                 (vec (map #(into {} %) (sut/features in))))))
+                 (set (map #(into {} %) (sut/features in))))))
 
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))

@@ -46,7 +46,16 @@
             SQLiteConfig
             SQLiteConfig$JournalMode
             SQLiteConfig$Pragma
-            SQLiteConfig$TransactionMode]))
+            SQLiteConfig$TransactionMode]
+           [java.util.logging Level]))
+
+;; SHUT UP PLEASE. I note that this is considered bad, because it
+;; means we cannot programmatically override this at runtime but
+;; frankly I am not sure we want that ability.
+;; All the alternative solutions for this are inordinately complicated.
+(doto (org.geotools.util.logging.Logging/getLogger
+       org.geotools.jdbc.JDBCDataStore)
+  (.setLevel Level/SEVERE))
 
 (defn- sqlite-query! [file query-params]
   (with-open [conn (jdbc/get-connection
