@@ -487,7 +487,8 @@
 
    Returns nil.
   "
-  ([file table-name ^Iterable features & {:keys [schema batch-insert-size]
+  ([file table-name ^Iterable features & {:keys [schema batch-insert-size
+                                                 add-spatial-index]
                                           :or {batch-insert-size 4000}}]
    {:pre [(or (instance? Iterable features) (nil? features))]}
    (with-open [geopackage (open-for-writing file batch-insert-size)]
@@ -509,6 +510,12 @@
              (.create geopackage feature-entry (->geotools-schema table-name spec))
              (catch java.lang.IllegalArgumentException _))
 
+           (when add-spatial-index
+             (try (.createSpatialIndex geopackage feature-entry)
+                  (catch java.io.IOException e
+                    (log/warnf e "Unable to create spatial index in %s on %s" file table-name))))
+           
+           
            ;; It may seem odd that we are getting an iterator out here
            ;; rather than just doing doseq [feature features], but for
            ;; reasons Neil & Tom were unable to discern that prevents

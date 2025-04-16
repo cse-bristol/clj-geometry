@@ -266,7 +266,9 @@
 
        :schema
        {"geometry" {:type :point :srid 27700}
-        "id" {:type :integer}})
+        "id" {:type :integer}}
+
+       :add-spatial-index true)
 
       (with-open [in (sut/open f :table-name "gpkg_contents")]
         (let [ls (sut/features in)
