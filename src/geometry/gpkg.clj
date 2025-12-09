@@ -138,7 +138,7 @@
    Internal implementation detail of gpkg/open."
   [^java.io.File file ^String table key-transform]
   (let [ds   (jdbc/get-datasource
-              (format "jdbc:sqlite:%s"
+              (format "jdbc:sqlite:file:%s?mode=ro&immutable=1"
                       (.getCanonicalPath (io/as-file file))))
 
         ;; unfortunately next.jdbc is not suitable
@@ -207,7 +207,8 @@
   (assert (.exists (io/as-file gpkg)))
   (let [store ^JDBCDataStore (DataStoreFinder/getDataStore
                               {"dbtype" "geopkg"
-                               "database" (.getCanonicalPath (io/as-file gpkg))})
+                               "database" (.getCanonicalPath (io/as-file gpkg))
+                               "read-only" true})
 
         _ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
 

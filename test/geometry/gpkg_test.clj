@@ -201,13 +201,13 @@
                     "test-empty-table" ".gpkg"
                     (into-array java.nio.file.attribute.FileAttribute [])))]
     (sut/write
-     f "zempty" nil {:schema {"bork" {:type :integer}}})
+     f "zempty" nil :schema {"bork" {:type :integer}})
 
     (sut/write
-     f "full" [{:bork 1} {:bork 2} {:bork 9}] {:schema {"bork" {:type :integer :accessor :bork}}})
+     f "full" [{:bork 1} {:bork 2} {:bork 9}] :schema {"bork" {:type :integer :accessor :bork}})
 
     (sut/write
-     f "aempty" [] {:schema {"bork" {:type :integer}}})
+     f "aempty" [] :schema {"bork" {:type :integer}})
 
     (let [in (with-open [g (sut/open f :key-transform keyword)] (doall (sut/features g)))]
       (t/is (= #{["full" 1] ["full" 2] ["full" 9]}
