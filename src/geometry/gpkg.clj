@@ -576,9 +576,15 @@
                             (str (quote-name col) " "
                                  ;; handled values should match ->geotools-type (except for geometric types):
                                  (cond
-                                   (#{:int :integer :short :long Integer Short Long} col-type) "INTEGER"
-                                   (#{:double :float :real Double Float} col-type) "REAL"
-                                   (#{:boolean Boolean} col-type) "BOOLEAN"
+                                   (#{:int :integer :short :long Integer Short Long
+                                      (.getCanonicalName Integer)
+                                      (.getCanonicalName Short)
+                                      (.getCanonicalName Long)} col-type) "INTEGER"
+                                   (#{:double :float :real Double Float
+                                      (.getCanonicalName Double)
+                                      (.getCanonicalName Float)} col-type) "REAL"
+                                   (#{:boolean Boolean
+                                      (.getCanonicalName Boolean)} col-type) "BOOLEAN"
                                    :else "TEXT"))))
 
                table-stmt (format "CREATE TABLE IF NOT EXISTS \"%s\" (%s);"
