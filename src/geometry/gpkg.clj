@@ -293,7 +293,7 @@
 (defn- kv-type [k v]
   [(name k)
    (cond->
-       {:accessor #(get % k)
+       {:accessor (if (keyword? k) k #(get % k))
         :type
         (if (instance? Geometry v)
           Geometries/GEOMETRY
