@@ -473,7 +473,7 @@
   (let [geom-col (spec-geom-field spec)]
     (doto (FeatureEntry.)
       (.setTableName table-name)
-      (.setGeometryColumn (first geom-col))
+      (.setGeometryColumn (name (first geom-col)))
       (.setGeometryType (->geotools-type (:type (second geom-col)))))))
 
 (defn- ->geotools-schema
@@ -484,7 +484,7 @@
    (string/join ","
                 (for [[name {:keys [type srid]}] spec]
                   (let [type (->geotools-type type)]
-                    (str name ":" type (when srid (str ":srid=" srid))))))))
+                    (str (clojure.core/name name) ":" type (when srid (str ":srid=" srid))))))))
 
 (defn- set-layer-extent!
   "Update the extent (if not nil) for `table-name` in the geopackage at `file`
