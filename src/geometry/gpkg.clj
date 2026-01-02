@@ -100,7 +100,7 @@
    for the features in the table.
 
    Internal implementation detail of gpkg/open."
-  [^JDBCFeatureStore source table-name crs ^MathTransform crs-transform key-transform]
+  [^JDBCFeatureStore source table-name crs ^MathTransform crs-transform key-transform fetch-rowid]
   (let [features (-> source
                      (.getFeatures)
                      (.features))]
@@ -122,8 +122,9 @@
                            (if (and is-geometry crs-transform)
                              (JTS/transform ^Geometry (.getValue property) crs-transform)
                              (.getValue property)))))
-
-               (transient {:table table-name :crs crs})
+               (transient (cond-> {:table table-name :crs crs}
+                            fetch-rowid
+                            (assoc ::rowid (some-> feature (.getID) (string/split #"\.") (last) (parse-long)))))
                (.getProperties feature)))))))
 
       (hasNext [_] (.hasNext features))
@@ -136,7 +137,7 @@
    the rows and columns in the table.
 
    Internal implementation detail of gpkg/open."
-  [^java.io.File file ^String table key-transform]
+  [^java.io.File file ^String table key-transform fetch-rowid]
   (let [ds   (jdbc/get-datasource
               (format "jdbc:sqlite:file:%s?mode=ro&immutable=1"
                       (.getCanonicalPath (io/as-file file))))
@@ -147,9 +148,11 @@
         stmt ^java.sql.Statement  (.createStatement conn)
         rs   ^java.sql.ResultSet  (.executeQuery
                                    stmt
-                                   (format "SELECT * FROM \"%s\"" table))
+                                   (if fetch-rowid
+                                     (format "SELECT rowid, * FROM \"%s\"" table)
+                                     (format "SELECT * FROM \"%s\"" table)))
         md   ^java.sql.ResultSetMetaData (.getMetaData rs)
-        cols (vec (for [i (range 1 (inc (.getColumnCount md)))]
+        cols (vec (for [i (range (if fetch-rowid 2 1) (inc (.getColumnCount md)))]
                     [i (.getColumnName md i)]))
         asked-has-next (atom false)
         has-next (atom false)]
@@ -163,7 +166,9 @@
          (persistent!
           (reduce
            (fn [a [^int i ^String n]] (assoc! a (key-transform n) (.getObject rs i)))
-           (transient {:table table})
+           (transient (cond-> {:table table}
+                        fetch-rowid (assoc ::rowid (.getObject rs 1))
+                        ))
            cols))))
 
       (hasNext [_]
@@ -201,9 +206,10 @@
    pass a GeometryFactory with a PrecisionModel set. If you do
    not know the precision of the geometries, but want them to be
    of a certain precision, use core/change-precision instead."
-  [gpkg & {:keys [table-name to-crs key-transform geometry-factory spatial-only?]
-                    :or {key-transform identity
-                         geometry-factory g/*factory*}}]
+  [gpkg & {:keys [table-name to-crs key-transform geometry-factory spatial-only?
+                  rowids?]
+           :or {key-transform identity
+                geometry-factory g/*factory*}}]
   (assert (.exists (io/as-file gpkg)))
   (let [store ^JDBCDataStore (DataStoreFinder/getDataStore
                               {"dbtype" "geopkg"
@@ -247,12 +253,12 @@
                           (assoc state
                                  :table table
                                  :tables tables
-                                 :iterator (gpkg-iterator source table crs crs-transform key-transform)))
+                                 :iterator (gpkg-iterator source table crs crs-transform key-transform rowids?)))
                         ;; non-spatial table
                         (assoc state
                                :table table
                                :tables tables
-                               :iterator (sqlite-iterator gpkg table key-transform)))]
+                               :iterator (sqlite-iterator gpkg table key-transform rowids?)))]
 
                   ;; this is to deal with empty tables - the Iterator implementation that's returned
                   ;; below mustn't (not (.hasNext)) until we have got to the end, so if we've made an
