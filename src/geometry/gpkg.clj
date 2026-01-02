@@ -28,6 +28,7 @@
 
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
+            [clojure.set :as set]
             [geometry.core :as g]
             [geometry.feature :as f]
             [next.jdbc :as jdbc]
@@ -411,6 +412,14 @@
         (.setBatchInsertSize ds batch-insert-size)))
     geopackage))
 
+(defn- open-sqlite
+  "Open a gpkg for general SQL operations via JDBC"
+  [file]
+  (org.sqlite.JDBC/createConnection
+   (format "jdbc:sqlite:%s"
+           (.getCanonicalPath (io/as-file file)))
+   (.toProperties sqlite-config)))
+
 (defn- spec-geom-field
   "Get the spec for the (first) geometry field from a schema."
   [spec]
@@ -524,9 +533,37 @@
    Returns nil.
   "
   ([file table-name ^Iterable features & {:keys [schema batch-insert-size
-                                                 add-spatial-index]
-                                          :or {batch-insert-size 4000}}]
-   {:pre [(or (instance? Iterable features) (nil? features))]}
+                                                 add-spatial-index
+                                                 if-exists]
+                                          :or {batch-insert-size 4000
+                                               if-exists :drop-table}}]
+   {:pre [(or (instance? Iterable features) (nil? features))
+          (#{:drop-table :delete-rows :append} if-exists)]}
+
+   (cond
+     (= :drop-table if-exists)
+     (try (with-open [ds (DataStoreFinder/getDataStore
+                          {"dbtype" "geopkg"
+                           "database" (.getCanonicalPath (io/as-file file))})]
+            (.removeSchema ds table-name)
+            (.dispose ds))
+          (catch Exception _
+            ;; this is only safe on a non-spatial table
+            (with-open [conn (open-sqlite file)]
+              (jdbc/with-transaction [tx conn]
+                (jdbc/execute!
+                 tx
+                 [(format "DROP TABLE IF EXISTS %s" table-name)])))))
+     
+     (= :delete-rows if-exists)
+     (with-open [conn (open-sqlite file)]
+       (try
+         (jdbc/with-transaction [tx conn]
+           (jdbc/execute!
+            tx
+            [(format "DELETE FROM %s" table-name)]))
+         (catch Exception _))))
+   
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [spec (vec (or schema (infer-spec (first features))))
            [geom-field {:keys [srid]
@@ -633,9 +670,7 @@
                                    (string/join ", " (repeat (count cols) "?")))]
 
            ;; have to make the connection manually so that SQLite config can be passed:
-           (with-open [conn (org.sqlite.JDBC/createConnection (format "jdbc:sqlite:%s"
-                                                                      (.getCanonicalPath (io/as-file file)))
-                                                              (.toProperties sqlite-config))]
+           (with-open [conn (open-sqlite file)]
              (jdbc/with-transaction [tx conn]
                (jdbc/execute! tx [table-stmt])
                (jdbc/execute-batch!
