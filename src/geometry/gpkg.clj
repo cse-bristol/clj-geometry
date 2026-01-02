@@ -104,6 +104,27 @@
   (let [features (-> source
                      (.getFeatures)
                      (.features))]
+
+    ;; This is a hack to work around a bug/limitation in geotools
+    ;; Geotools assumes that all geopackage fields with mime-type application/json
+    ;; contain json-encoded primitive arrays, rather than arbitrary blobs
+    ;; and therefore decodes them to arrays. I'm not sure whether a geopackage
+    ;; can be marked up as containing an int array, and what would happen
+    ;; in that case.
+    (doseq [att (.getAttributeDescriptors (.getSchema source))]
+      (when-let [data-column (some-> att
+                                     (.getUserData)
+                                     (.get "gpkg.dataColumn"))]
+        (when (= "application/json" (.getMimeType data-column))
+          ;; this is essentially to disable array decoding in GeoPkgDialect.convertValue() here
+          ;; https://github.com/geotools/geotools/blob/e24ceff09ce11f537a666bed2f6c039144177bb3/modules/plugin/geopkg/src/main/java/org/geotools/geopkg/GeoPkgDialect.java#L968
+          ;; via https://github.com/geotools/geotools/blob/e24ceff09ce11f537a666bed2f6c039144177bb3/modules/plugin/geopkg/src/main/java/org/geotools/geopkg/GeoPkgDialect.java#L746
+
+          ;; otherwise non-array json values will crash geotools on reading a feature.
+          ;; They come out as a String[] with 1 element. This cannot be patched around
+          ;; here because the binding is not mutable
+          (.setMimeType data-column ""))))
+    
     (reify
       java.util.Iterator
       (next [_]
@@ -121,7 +142,15 @@
                              (key-transform (.getLocalPart (.getName property))))
                            (if (and is-geometry crs-transform)
                              (JTS/transform ^Geometry (.getValue property) crs-transform)
-                             (.getValue property)))))
+                             (let [value (.getValue property)]
+                               ;; if the value is a string[] of length 1,
+                               ;; unwrap it as it is actually a json value.
+                               (if (and (instance? String/1 value)
+                                        (= (count value) 1))
+                                 (aget value 0)
+                                 value)
+                               )))))
+
                (transient (cond-> {:table table-name :crs crs}
                             fetch-rowid
                             (assoc ::rowid (some-> feature (.getID) (string/split #"\.") (last) (parse-long)))))
