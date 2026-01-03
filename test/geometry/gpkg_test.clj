@@ -324,6 +324,60 @@
     (t/is (= (escape-identifier "\"weird identifier.strange") "\"\"\"weird identifier.strange\""))
     (t/is (= (escape-identifier "foo" "bar") "\"foo\".\"bar\""))))
 
+(t/deftest test-amend-gpkg
+  (let [f (.toFile (java.nio.file.Files/createTempFile
+                    "test-read-write" ".gpkg"
+                    (into-array java.nio.file.attribute.FileAttribute [])))]
+    (try
+      ;; write some features down
+      (sut/write
+       f
+       "test-table"
+
+       [{"geometry" (g/make-point 1 2) "id" 1 "b" "abc" :c true :inf ##Inf}
+        {"geometry" (g/make-point 4 5) "id" 2 "b" "def" :c false :inf ##Inf}
+        {"geometry" nil "id" 3 "b" "ghi" :c false :inf ##Inf}]
+
+       :schema
+       {"geometry" {:type :point :srid 27700}
+        "id" {:type :integer}
+        "b" {:type :string}
+        "c" {:type :boolean :accessor :c}
+        "inf" {:type :double :accessor :inf}})
+
+      ;; read them back and compare
+
+      (sut/amend
+       f "test-table"
+       (with-open [in (sut/open f :table-name "test-table" :rowids? true)]
+         (mapv
+          (fn [feature]
+            (-> feature
+                (g/update-geometry (g/make-point 3 3))
+                (update "b" #(.toUpperCase %))
+                (update "c" #(if (zero? %) true false))))
+          (sut/features in)))
+       :schema
+       ;; update these fields only
+       {"geometry" {:type :point :srid 27700 :accessor g/geometry}
+        "b" {:type :string}
+        "c" {:type :boolean}})
+
+      ;; read back and check
+      (t/is
+       (= (group-by
+           #(get % "id")
+           [{:geometry (g/make-point 3 3) "id" 3 :table "test-table" :crs "EPSG:27700" "b" "GHI" "c" 1 "inf" ##Inf}
+            {:geometry (g/make-point 3 3) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "ABC" "c" 0 "inf" ##Inf}
+            {:geometry (g/make-point 3 3) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "DEF" "c" 1 "inf" ##Inf}])
+
+          (with-open [in (sut/open f :table-name "test-table")]
+            (group-by #(get % "id")
+                      (map #(into {} %) (sut/features in))))))
+
+      (catch Exception e (prn e) (throw e))
+      (finally (io/delete-file f)))))
+
 (comment
   (with-open [gpkg (sut/open "/tmp/hnzp-1966294190446547555/Data/oproad_gb.gpkg" :table-name "road_link")
               f (io/writer "/tmp/hnzp-1966294190446547555/test.txt")]

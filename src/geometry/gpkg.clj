@@ -715,7 +715,9 @@
       :or {if-exists :set-null
            schema (infer-spec (first values))}}]
   
-  (let [temp-table "__temp__"]
+  (let [temp-table "__temp__"
+        rowid-col "_original_rowid"
+        ]
     ;; write data to temp table. We don't do this within a
     ;; transaction sadly because it's nice to be able to use
     ;; geotools for writing geodata, etc etc.
@@ -723,7 +725,7 @@
      gpkg temp-table values
      :schema (conj
               schema
-              ["_original_rowid" {:type :long :accessor ::rowid}]))
+              [rowid-col {:type :long :accessor ::rowid}]))
 
     (with-open [conn (open-sqlite gpkg)]
       (try
@@ -733,7 +735,7 @@
           ;; (maybe), then to create what is missing
           (let [src-cols (->> (jdbc/execute!
                                tx [(format "PRAGMA table_info(%s)" (escape-identifier temp-table))])
-                              (remove (comp #{"_original_rowid" "rowid" "fid"} :name)))
+                              (remove (comp #{rowid-col "rowid" "fid"} :name)))
 
                 src-names (set (map :name src-cols))
                 
@@ -785,7 +787,7 @@
                        (for [col src-cols]
                          (str (escape-identifier (:name col)) " = " (escape-identifier temp-table (:name col)))))
                       (escape-identifier temp-table)
-                      (escape-identifier table "rowid") (escape-identifier temp-table "__original_rowid"))])))
+                      (escape-identifier table "rowid") (escape-identifier temp-table rowid-col))])))
         
         (finally
           (jdbc/with-transaction [tx conn]
