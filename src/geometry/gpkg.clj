@@ -509,8 +509,19 @@
       (.getMaxX layer-extent)
       (.getMaxY layer-extent)
       table-name]))
-  
   file)
+
+(defn- escape-identifier
+  "Return a version of `identfier` safe for use in an sql string.
+
+  This will quote it and escape any embedded quotes. Needed because
+  table/column names cannot be query parameters. next.jdbc has
+  functions like this but they do not support field names that contain
+  quotes, or periods."
+  ([identifier]
+   (str \" (string/replace (name identifier) #"\"" "\"\"") \"))
+  ([table col]
+   (str (escape-identifier table) "." (escape-identifier col))))
 
 (defn write
   "Write the given sequence of `features` into a geopackage at `file`
@@ -553,7 +564,7 @@
               (jdbc/with-transaction [tx conn]
                 (jdbc/execute!
                  tx
-                 [(format "DROP TABLE IF EXISTS %s" table-name)])))))
+                 [(format "DROP TABLE IF EXISTS %s" (escape-identifier table-name))])))))
      
      (= :delete-rows if-exists)
      (with-open [conn (open-sqlite file)]
@@ -561,7 +572,7 @@
          (jdbc/with-transaction [tx conn]
            (jdbc/execute!
             tx
-            [(format "DELETE FROM %s" table-name)]))
+            [(format "DELETE FROM %s" (escape-identifier table-name))]))
          (catch Exception _))))
    
    (with-open [geopackage (open-for-writing file batch-insert-size)]
@@ -640,12 +651,10 @@
              (set-layer-extent! file table-name layer-extent)))
 
          ;; non-spatial data:
-         (let [quote-name (fn [s] (str "\"" (name s) "\""))
-
-               col-types (string/join
+         (let [col-types (string/join
                           ","
                           (for [[col {col-type :type}] spec]
-                            (str (quote-name col) " "
+                            (str (escape-identifier col) " "
                                  ;; handled values should match ->geotools-type (except for geometric types):
                                  (cond
                                    (#{:int :integer :short :long Integer Short Long
@@ -659,14 +668,14 @@
                                       (.getCanonicalName Boolean)} col-type) "BOOLEAN"
                                    :else "TEXT"))))
 
-               table-stmt (format "CREATE TABLE IF NOT EXISTS \"%s\" (%s);"
-                                  table-name col-types)
+               table-stmt (format "CREATE TABLE IF NOT EXISTS %s (%s);"
+                                  (escape-identifier table-name) col-types)
 
                cols (mapv (comp name first) spec)
 
-               insert-stmt (format "INSERT INTO \"%s\" (%s) values (%s)"
-                                   table-name
-                                   (string/join ", " (map quote-name cols))
+               insert-stmt (format "INSERT INTO %s (%s) values (%s)"
+                                   (escape-identifier table-name)
+                                   (string/join ", " (map escape-identifier cols))
                                    (string/join ", " (repeat (count cols) "?")))]
 
            ;; have to make the connection manually so that SQLite config can be passed:
@@ -723,13 +732,13 @@
           ;; what columns there are, then to drop or null them out
           ;; (maybe), then to create what is missing
           (let [src-cols (->> (jdbc/execute!
-                               tx [(format "PRAGMA table_info(%s)" temp-table)])
+                               tx [(format "PRAGMA table_info(%s)" (escape-identifier temp-table))])
                               (remove (comp #{"_original_rowid" "rowid" "fid"} :name)))
 
                 src-names (set (map :name src-cols))
                 
                 tgt-names (->> (jdbc/execute!
-                                tx [(format "PRAGMA table_info(%s)" table)])
+                                tx [(format "PRAGMA table_info(%s)" (escape-identifier table))])
                                (map :name)
                                (set))
 
@@ -743,8 +752,7 @@
                   (doseq [col existing]
                     (jdbc/execute!
                      tx
-                     ;; TODO query parameters?
-                     [(let [s (format "ALTER TABLE %s DROP COLUMN %s" table col)]
+                     [(let [s (format "ALTER TABLE %s DROP COLUMN %s" (escape-identifier table) (escape-identifier col))]
                         (println s)
                         s
                         )]))
@@ -753,31 +761,33 @@
                   (jdbc/execute!
                    tx
                    [(format "UPDATE %s SET %s"
-                            table
+                            (escape-identifier table)
                             (string/join
                              ", "
-                             (for [col existing] (str col " = NULL"))))]))
+                             (for [col existing] (str (escape-identifier col) " = NULL"))))]))
 
             (doseq [col src-cols]
               (when (missing (:name col))
                 (jdbc/execute!
                  tx
                  [(format "ALTER TABLE %s ADD COLUMN %s %s"
-                          table (:name col) (:type col))])))
+                          (escape-identifier table)
+                          (escape-identifier (:name col))
+                          (:type col))])))
 
             ;; update from join
             (jdbc/execute!
              tx
-             [(format "UPDATE %s SET %s FROM %s WHERE %s.rowid = %s._original_rowid"
-                      table
+             [(format "UPDATE %s SET %s FROM %s WHERE %s = %s"
+                      (escape-identifier table)
                       (string/join
                        ", "
                        (for [col src-cols]
-                         (str (:name col) " = " temp-table "." (:name col))))
-                      temp-table
-                      table temp-table)])))
+                         (str (escape-identifier (:name col)) " = " (escape-identifier temp-table (:name col)))))
+                      (escape-identifier temp-table)
+                      (escape-identifier table "rowid") (escape-identifier temp-table "__original_rowid"))])))
         
         (finally
           (jdbc/with-transaction [tx conn]
-            (jdbc/execute! tx [(format "DROP TABLE %s" temp-table)])))))))
+            (jdbc/execute! tx [(format "DROP TABLE \"%s\"" temp-table)])))))))
 

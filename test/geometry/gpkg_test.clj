@@ -317,6 +317,13 @@
       (catch Exception e (prn e) (throw e))
       (finally (io/delete-file f)))))
 
+(t/deftest test-escape-identifier
+  (let [escape-identifier #'sut/escape-identifier]
+    (t/is (= (escape-identifier "foo") "\"foo\""))
+    (t/is (= (escape-identifier "foo.bar") "\"foo.bar\""))
+    (t/is (= (escape-identifier "\"weird identifier.strange") "\"\"\"weird identifier.strange\""))
+    (t/is (= (escape-identifier "foo" "bar") "\"foo\".\"bar\""))))
+
 (comment
   (with-open [gpkg (sut/open "/tmp/hnzp-1966294190446547555/Data/oproad_gb.gpkg" :table-name "road_link")
               f (io/writer "/tmp/hnzp-1966294190446547555/test.txt")]
