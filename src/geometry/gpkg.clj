@@ -683,3 +683,101 @@
                       (accessor feature))))
                 {:batch-size batch-insert-size})))))
        nil))))
+
+(defn amend
+  "Update existing rows in `table` within `gpkg`.
+  `values` are the new values to write in. They should have ::rowid on
+  them so we can join. `gpkg/read` above will extract rowid if you ask
+  for it.
+
+  The expected usage is that you pull rows out with `read` including
+  rowid, update / create some columns, and then call `amend` with a
+  schema for the columns to be updated.
+
+  `if-exists` can be `:preserve`, `:set-null` or `:drop-column`.
+
+  `:drop-column` is safest, since you don't need to be sure the types
+  align. However, older sqlite drivers do not support DROP COLUMN in
+  ALTER TABLE, and the verison of geotools we're using currently
+  depends on an old sqlite. So we either need to risk using variant
+  versions of sqlite, or update geotools."
+  [gpkg table values
+   & {:keys [schema if-exists]
+      :or {if-exists :set-null
+           schema (infer-spec (first values))}}]
+  
+  (let [temp-table "__temp__"]
+    ;; write data to temp table. We don't do this within a
+    ;; transaction sadly because it's nice to be able to use
+    ;; geotools for writing geodata, etc etc.
+    (write
+     gpkg temp-table values
+     :schema (conj
+              schema
+              ["_original_rowid" {:type :long :accessor ::rowid}]))
+
+    (with-open [conn (open-sqlite gpkg)]
+      (try
+        (jdbc/with-transaction [tx conn]
+          ;; ensure target columns exist; first we need to find out
+          ;; what columns there are, then to drop or null them out
+          ;; (maybe), then to create what is missing
+          (let [src-cols (->> (jdbc/execute!
+                               tx [(format "PRAGMA table_info(%s)" temp-table)])
+                              (remove (comp #{"_original_rowid" "rowid" "fid"} :name)))
+
+                src-names (set (map :name src-cols))
+                
+                tgt-names (->> (jdbc/execute!
+                                tx [(format "PRAGMA table_info(%s)" table)])
+                               (map :name)
+                               (set))
+
+                existing (set/intersection src-names tgt-names)
+                missing  (if (= if-exists :drop-column)
+                           src-names
+                           (set/difference src-names tgt-names))
+                ]
+
+            (cond (= :drop-column if-exists)
+                  (doseq [col existing]
+                    (jdbc/execute!
+                     tx
+                     ;; TODO query parameters?
+                     [(let [s (format "ALTER TABLE %s DROP COLUMN %s" table col)]
+                        (println s)
+                        s
+                        )]))
+                  
+                  (and (seq existing) (= :set-null if-exists))
+                  (jdbc/execute!
+                   tx
+                   [(format "UPDATE %s SET %s"
+                            table
+                            (string/join
+                             ", "
+                             (for [col existing] (str col " = NULL"))))]))
+
+            (doseq [col src-cols]
+              (when (missing (:name col))
+                (jdbc/execute!
+                 tx
+                 [(format "ALTER TABLE %s ADD COLUMN %s %s"
+                          table (:name col) (:type col))])))
+
+            ;; update from join
+            (jdbc/execute!
+             tx
+             [(format "UPDATE %s SET %s FROM %s WHERE %s.rowid = %s._original_rowid"
+                      table
+                      (string/join
+                       ", "
+                       (for [col src-cols]
+                         (str (:name col) " = " temp-table "." (:name col))))
+                      temp-table
+                      table temp-table)])))
+        
+        (finally
+          (jdbc/with-transaction [tx conn]
+            (jdbc/execute! tx [(format "DROP TABLE %s" temp-table)])))))))
+
