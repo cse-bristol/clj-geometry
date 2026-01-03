@@ -712,12 +712,11 @@
   versions of sqlite, or update geotools."
   [gpkg table values
    & {:keys [schema if-exists]
-      :or {if-exists :set-null
-           schema (infer-spec (first values))}}]
+      :or {if-exists :set-null}}]
   
-  (let [temp-table "__temp__"
-        rowid-col "_original_rowid"
-        ]
+  (let [schema (or schema (infer-spec (first values)))
+        temp-table "__temp__"
+        rowid-col "_original_rowid"]
     ;; write data to temp table. We don't do this within a
     ;; transaction sadly because it's nice to be able to use
     ;; geotools for writing geodata, etc etc.
