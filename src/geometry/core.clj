@@ -38,7 +38,8 @@
            [org.locationtech.jts.operation.overlayng OverlayNGRobust]
            [org.locationtech.jts.operation.polygonize Polygonizer]
            [org.locationtech.jts.precision GeometryPrecisionReducer]
-           [org.locationtech.jts.densify Densifier]))
+           [org.locationtech.jts.densify Densifier])
+  (:refer-clojure :exclude [contains?]))
 
 (def ^:private ^org.locationtech.jts.geom.CoordinateSequenceFactory patched-csf
   "This amended coordinate sequence factory is required so we get
