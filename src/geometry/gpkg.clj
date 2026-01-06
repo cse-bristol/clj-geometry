@@ -547,7 +547,7 @@
                                                  add-spatial-index
                                                  if-exists]
                                           :or {batch-insert-size 4000
-                                               if-exists :drop-table}}]
+                                               if-exists :append}}]
    {:pre [(or (instance? Iterable features) (nil? features))
           (#{:drop-table :delete-rows :append} if-exists)]}
 
