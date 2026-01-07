@@ -494,7 +494,8 @@
    {:pre [(or (instance? Iterable features) (nil? features))]}
    (with-open [geopackage (open-for-writing file batch-insert-size)]
      (let [spec (vec (or schema (infer-spec (first features))))
-           [geom-field {:keys [srid accessor]
+           [geom-field {:keys [srid]
+                        geom-accessor :accessor
                         :or   {srid 27700}}] (spec-geom-field spec)
            crs (CRS/decode (str "EPSG:" srid))]
        (if geom-field
@@ -545,7 +546,7 @@
                                  (.write writer)
                                  (recur
                                   (let [^Geometry geom (if accessor
-                                                         (accessor feature)
+                                                         (geom-accessor feature)
                                                          (get feature geom-field))
                                         ^Envelope feature-env
                                         (cond
