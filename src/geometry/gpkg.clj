@@ -545,7 +545,7 @@
                                   ^java.util.List (emit-feature feature))
                                  (.write writer)
                                  (recur
-                                  (let [^Geometry geom (if accessor
+                                  (let [^Geometry geom (if geom-accessor
                                                          (geom-accessor feature)
                                                          (get feature geom-field))
                                         ^Envelope feature-env
