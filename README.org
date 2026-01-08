@@ -1,0 +1,10 @@
+#+TITLE: CLJ Geometry
+
+A library wrapping JTS and some bits of geotools, for working with
+geospatial data and geometries.
+
+* Run tests
+
+#+begin_src sh
+  clj -M:test
+#+end_src
