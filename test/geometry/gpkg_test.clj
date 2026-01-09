@@ -433,6 +433,79 @@
     )
   )
 
+(t/deftest test-amend-left-join
+  (let [f (.toFile (java.nio.file.Files/createTempFile
+                    "test-read-write" ".gpkg"
+                    (into-array java.nio.file.attribute.FileAttribute [])))]
+    (try
+      ;; write some features down
+      (sut/write
+       f
+       "test-table"
+
+       [{"geometry" (g/make-point 1 2) "id" 1 "b" "abc" :c true} ;; should get duplicated
+        {"geometry" (g/make-point 1 3) "id" 2 "b" "abc" :c true} ;; should get changed
+        {"geometry" (g/make-point 1 4) "id" 3 "b" "qwe" :c true} ;; should be untouched
+        ]
+
+       :schema
+       {"geometry" {:type :point :srid 27700}
+        "id"       {:type :integer}
+        "b"        {:type :string}
+        "c"        {:type :boolean :accessor :c}})
+
+      ;; read them back and compare
+
+      (sut/amend
+       f "test-table"
+       (with-open [in (sut/open f :table-name "test-table" :rowids? true)]
+         (mapcat
+          (fn [feature]
+            (case (get feature "id")
+              1 [(-> feature
+                     (g/update-geometry (g/make-point 3 3))
+                     (update "b" #(str "ONE " (.toUpperCase %)))
+                     (update "c" #(if (zero? %) false true)))
+                 
+                 (-> feature
+                     (g/update-geometry (g/make-point 4 4))
+                     (update "b" #(str "TWO " (.toUpperCase %)))
+                     (update "c" #(if (zero? %) false true)))
+                 ]
+
+              2 [(assoc feature "b" "ONLY")]
+
+              [] ;; nop
+              ))
+          (sut/features in)))
+       :if-exists :preserve
+       :method :left-join
+       :schema
+       ;; update these fields only
+       {"geometry" {:type :point :srid 27700 :accessor g/geometry}
+        "b"        {:type :string}
+        "c"        {:type :boolean}})
+
+      ;; read back and check
+      (t/is
+       (= (group-by
+           #(get % "id")
+           [{:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 3 3) "id" 1 "b" "ONE ABC" "c" 1}
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 4 4) "id" 1 "b" "TWO ABC" "c" 1}
+            
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 3) "id" 2 "b" "ONLY" "c" 1}
+            
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 4) "id" 3 "b" "qwe" "c" 1}
+
+            ])
+
+          (with-open [in (sut/open f :table-name "test-table")]
+            (group-by #(get % "id")
+                      (map #(into {} %) (sut/features in))))))
+
+      (catch Exception e (prn e) (throw e))
+      (finally (io/delete-file f)))))
+
 (comment
   (with-open [gpkg (sut/open "/tmp/hnzp-1966294190446547555/Data/oproad_gb.gpkg" :table-name "road_link")
               f (io/writer "/tmp/hnzp-1966294190446547555/test.txt")]

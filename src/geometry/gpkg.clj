@@ -712,17 +712,45 @@
   align. However, older sqlite drivers do not support DROP COLUMN in
   ALTER TABLE, and the verison of geotools we're using currently
   depends on an old sqlite. So we either need to risk using variant
-  versions of sqlite, or update geotools."
-  [gpkg table values
-   & {:keys [schema if-exists]
-      :or {if-exists :set-null}}]
+  versions of sqlite, or update geotools.
   
-  (let [schema (or schema (infer-spec (first values)))
+  `method` can be `:update-set` or `:left-join`
+
+  - `:update-set` works as UPDATE table SET cols = vals WHERE table.rowid = input.rowid
+    
+    unmatched rows are affected according to `if-exists`
+    the inputs must be distinct on ::rowid
+  - `:left-join` works as CREATE table AS (SELECT cols FROM old_table LEFT JOIN input)
+
+    unmatched rows are affected according to `if-exists`
+    if inputs are not distinct on ::rowid, new rows are created. old rowids are broken
+    so any internal joins / triggers etc related to these will be damaged.
+
+  The actual implementation here is:
+  1. insert data into a temp table
+  2. (if needed) zap the existing columns
+  3. add any missing columns
+  4. update the temp table to mark repeat rowids (for left-join type behaviour)
+  5. issue UPDATE SET to copy cols for non-repeating rows
+  6. issue INSERT INTO (SELECT FROM JOIN) for repeating rows
+  7. issue DELETE for original copies of repeating rows
+
+  This routine will at least preserve indexes and FK relationships on the target table.
+
+  It may fail if the result is not valid.
+  "
+  [gpkg table values
+   & {:keys [schema if-exists method]
+      :or {if-exists :set-null method :update-set}}]
+
+  {:pre [(#{:update-set :left-join} method)]}
+  
+  (let [escape-identifier (memoize escape-identifier)
+        schema (or schema (infer-spec (first values)))
         temp-table "__temp__"
         rowid-col "_original_rowid"]
-    ;; write data to temp table. We don't do this within a
-    ;; transaction sadly because it's nice to be able to use
-    ;; geotools for writing geodata, etc etc.
+
+    ;; first write the new columns into our temporary table
     (write
      gpkg temp-table values
      :schema (conj
@@ -747,10 +775,9 @@
                                (set))
 
                 existing (set/intersection src-names tgt-names)
-                missing  (if (= if-exists :drop-column)
+                missing  (if (= if-exists :drop-column) ;; if we are going to drop them, we need to create them all!
                            src-names
-                           (set/difference src-names tgt-names))
-                ]
+                           (set/difference src-names tgt-names))]
 
             (cond (= :drop-column if-exists)
                   (doseq [col existing]
@@ -770,6 +797,8 @@
                              ", "
                              (for [col existing] (str (escape-identifier col) " = NULL"))))]))
 
+            
+            
             (doseq [col src-cols]
               (when (missing (:name col))
                 (jdbc/execute!
@@ -779,18 +808,80 @@
                           (escape-identifier (:name col))
                           (:type col))])))
 
-            ;; update from join
             (jdbc/execute!
              tx
-             [(format "UPDATE %s SET %s FROM %s WHERE %s = %s"
+             [(format "ALTER TABLE %s ADD COLUMN __singular BOOLEAN default TRUE" (escape-identifier temp-table))])
+
+            (let [non-singular-count
+                  (-> (jdbc/execute!
+                       tx
+                       [(format "UPDATE %s SET __singular = false FROM (SELECT %s jid, count(*) N FROM %s GROUP BY %s) B WHERE %s = B.jid AND B.N > 1"
+                                (escape-identifier temp-table) ;; update %s set
+                                (escape-identifier rowid-col)  ;; %s jid
+                                (escape-identifier temp-table) ;; from %s
+                                (escape-identifier temp-table rowid-col) ;; group by %s
+                                (escape-identifier temp-table rowid-col))])   ;; where %s = 
+                      (first)
+                      (:next.jdbc/update-count))]
+              (when (and (pos? non-singular-count)
+                         (not= :left-join method))
+                (throw (ex-info
+                        "Multiple matched rows in geopackage update"
+                        {:duplicate-row-count non-singular-count
+                         :table table
+                         :file gpkg
+                         :values values}))))
+
+            (jdbc/execute!
+             tx
+             [(format "UPDATE %s SET %s FROM %s WHERE %s = %s AND %s.__singular"
                       (escape-identifier table)
                       (string/join
                        ", "
                        (for [col src-cols]
                          (str (escape-identifier (:name col)) " = " (escape-identifier temp-table (:name col)))))
                       (escape-identifier temp-table)
-                      (escape-identifier table "rowid") (escape-identifier temp-table rowid-col))])))
-        
+                      (escape-identifier table "rowid") (escape-identifier temp-table rowid-col)
+                      (escape-identifier temp-table))])
+            
+            (when (= method :left-join)
+              (let [col-exprs
+                    (concat
+                     ;; all the cols we are just keeping
+                     (for [col-name (disj (set/difference tgt-names src-names) "fid")]
+                       [(escape-identifier col-name)
+                        (format "%s as %s"
+                                (escape-identifier table col-name)
+                                (escape-identifier col-name))])
+                     
+                     ;; all the cols we are setting
+                     (for [col src-cols]
+                       [(escape-identifier (:name col))
+                        (format "(CASE WHEN %s NOT NULL THEN %s ELSE %s END) AS %s"
+                                (escape-identifier temp-table rowid-col)
+                                (escape-identifier temp-table (:name col))
+                                (escape-identifier table (:name col))
+                                (escape-identifier (:name col)))]))]
+                (jdbc/execute!
+                 tx
+                 [(format
+                   "INSERT INTO %s (%s) SELECT %s FROM %s INNER JOIN %s ON %s = %s WHERE NOT (__singular)"
+                   (escape-identifier table)
+                   (string/join "," (map first col-exprs))
+                   (string/join ", " (map second col-exprs))
+                   
+                   (escape-identifier table)
+                   (escape-identifier temp-table)
+                   (escape-identifier table "rowid")
+                   (escape-identifier temp-table rowid-col))]))
+
+              ;; delete original rows after they have been multiplied up
+              (jdbc/execute!
+               tx [(format "DELETE FROM %s WHERE rowid IN (SELECT %s FROM %s WHERE NOT(__singular))"
+                           (escape-identifier table)
+                           (escape-identifier rowid-col)
+                           (escape-identifier temp-table))])
+              )))
         (finally
           (jdbc/with-transaction [tx conn]
             (jdbc/execute! tx [(format "DROP TABLE \"%s\"" temp-table)])))))))
