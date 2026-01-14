@@ -548,6 +548,21 @@
   ([table col]
    (str (escape-identifier table) "." (escape-identifier col))))
 
+(defn drop-table [file table-name]
+  (try (with-open [ds (DataStoreFinder/getDataStore
+                       {"dbtype" "geopkg"
+                        "database" (.getCanonicalPath (io/as-file file))})]
+         (try
+           (.removeSchema ds table-name)
+           (finally (.dispose ds))))
+       (catch Exception _
+         ;; this is only safe on a non-spatial table
+         (with-open [conn (open-sqlite file)]
+           (jdbc/with-transaction [tx conn]
+             (jdbc/execute!
+              tx
+              [(format "DROP TABLE IF EXISTS %s" (escape-identifier table-name))]))))))
+
 (defn write
   "Write the given sequence of `features` into a geopackage at `file`
   in a table called `table-name`
@@ -578,18 +593,7 @@
 
    (cond
      (= :drop-table if-exists)
-     (try (with-open [ds (DataStoreFinder/getDataStore
-                          {"dbtype" "geopkg"
-                           "database" (.getCanonicalPath (io/as-file file))})]
-            (.removeSchema ds table-name)
-            (.dispose ds))
-          (catch Exception _
-            ;; this is only safe on a non-spatial table
-            (with-open [conn (open-sqlite file)]
-              (jdbc/with-transaction [tx conn]
-                (jdbc/execute!
-                 tx
-                 [(format "DROP TABLE IF EXISTS %s" (escape-identifier table-name))])))))
+     (drop-table file table-name)
      
      (= :delete-rows if-exists)
      (with-open [conn (open-sqlite file)]
@@ -775,16 +779,15 @@
         schema (or schema (infer-spec (first values)))
         temp-table "__temp__"
         rowid-col "_original_rowid"]
+    (try
+      ;; first write the new columns into our temporary table
+      (write
+       gpkg temp-table values
+       :schema (conj
+                schema
+                [rowid-col {:type :long :accessor ::rowid}]))
 
-    ;; first write the new columns into our temporary table
-    (write
-     gpkg temp-table values
-     :schema (conj
-              schema
-              [rowid-col {:type :long :accessor ::rowid}]))
-
-    (with-open [conn (open-sqlite gpkg)]
-      (try
+      (with-open [conn (open-sqlite gpkg)]
         (jdbc/with-transaction [tx conn]
           (jdbc/execute!
            tx [(format "CREATE INDEX __temp__rowid__idx ON %s (%s)"
@@ -928,8 +931,7 @@
                tx [(format "DELETE FROM %s WHERE rowid IN (SELECT %s FROM %s WHERE NOT(__singular))"
                            (escape-identifier table)
                            (escape-identifier rowid-col)
-                           (escape-identifier temp-table))]))))
-        (finally
-          (jdbc/with-transaction [tx conn]
-            (jdbc/execute! tx [(format "DROP TABLE \"%s\"" temp-table)])))))))
+                           (escape-identifier temp-table))])))))
+      (finally
+        (drop-table gpkg temp-table)))))
 
