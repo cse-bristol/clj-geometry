@@ -249,7 +249,13 @@
         _ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
 
         tables (if table-name
-                 [table-name]
+                 (let [known (table-names gpkg :include-system? true)]
+                   (when-not (known table-name)
+                     (throw (ex-info "Table not found in geopackage"
+                                     {:file gpkg
+                                      :table table-name
+                                      :tables known})))
+                   [table-name])
                  (into [] (table-names gpkg :spatial-only? spatial-only?)))
 
         state (volatile! {:table nil
