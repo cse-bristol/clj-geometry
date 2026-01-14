@@ -333,10 +333,10 @@
       java.lang.AutoCloseable
       (close [_]
         ;; close feature iterator
-        (vswap! state (fn [state]
-                        (when-let [^java.io.Closeable i (:iterator state)] (.close i))
-                        (assoc state :iterator nil :closed true)))
-        (.dispose store))
+        (try (vswap! state (fn [state]
+                             (when-let [^java.io.Closeable i (:iterator state)] (.close i))
+                             (assoc state :iterator nil :closed true)))
+             (finally (.dispose store))))
 
       java.util.Iterator
       (next [_]
