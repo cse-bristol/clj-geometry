@@ -137,20 +137,22 @@
               (reduce
                (fn [out ^SimpleFeatureImpl$Attribute property]
                  (let [is-geometry (= (.getName property) geometry-property-name)]
-                   (assoc! out
-                           (if is-geometry
-                             :geometry
-                             (key-transform (.getLocalPart (.getName property))))
-                           (if (and is-geometry crs-transform)
-                             (JTS/transform ^Geometry (.getValue property) crs-transform)
-                             (let [value (.getValue property)]
-                               ;; if the value is a string[] of length 1,
-                               ;; unwrap it as it is actually a json value.
-                               (if (and (instance? String/1 value)
-                                        (= (count value) 1))
-                                 (aget value 0)
-                                 value)
-                               )))))
+                   (if-let [col-key (if is-geometry
+                                      :geometry
+                                      (key-transform (.getLocalPart (.getName property))))]
+                     (assoc! out
+                             col-key
+                             (if (and is-geometry crs-transform)
+                               (JTS/transform ^Geometry (.getValue property) crs-transform)
+                               (let [value (.getValue property)]
+                                 ;; if the value is a string[] of length 1,
+                                 ;; unwrap it as it is actually a json value.
+                                 (if (and (instance? String/1 value)
+                                          (= (count value) 1))
+                                   (aget value 0)
+                                   value))))
+                     ;; do nothing, skip key
+                     out)))
 
                (transient (cond-> {:table table-name :crs crs}
                             fetch-rowid
@@ -182,8 +184,10 @@
                                      (format "SELECT rowid, * FROM \"%s\"" table)
                                      (format "SELECT * FROM \"%s\"" table)))
         md   ^java.sql.ResultSetMetaData (.getMetaData rs)
-        cols (vec (for [i (range (if fetch-rowid 2 1) (inc (.getColumnCount md)))]
-                    [i (.getColumnName md i)]))
+        cols (vec (for [i (range (if fetch-rowid 2 1) (inc (.getColumnCount md)))
+                        :let [col-key (key-transform (.getColumnName md i))]
+                        :when col-key]
+                    [i col-key]))
         asked-has-next (atom false)
         has-next (atom false)]
     (reify
@@ -195,10 +199,9 @@
         (f/map->Feature
          (persistent!
           (reduce
-           (fn [a [^int i ^String n]] (assoc! a (key-transform n) (.getObject rs i)))
+           (fn [a [^int i n]] (assoc! a n (.getObject rs i)))
            (transient (cond-> {:table table}
-                        fetch-rowid (assoc ::rowid (.getObject rs 1))
-                        ))
+                        fetch-rowid (assoc ::rowid (.getObject rs 1))))
            cols))))
 
       (hasNext [_]
@@ -228,9 +231,25 @@
    so they have a :geometry, :table :crs, and then contain whatever
    columns are in the geopackage table they came from.
 
+   for example you can print a geopackage out with
+
    (with-open [h (gpkg/open my-file)]
      (doseq [f (gpkg/features h)]
         (println f)))
+
+   If you want a specific table, use the `table` keyword argument.
+
+   Column names are processed through `key-transform`, so e.g. `keyword`
+   will convert them to clojure keywords. If `key-transform` returns false/nil
+   the column will be omitted from the feature, so you can use it to select
+   specific columns as well. For example 
+
+   :key-transform (comp #{:a :b} keyword) will keep columns a and b
+
+   if `rowids?` is true, the resulting entries will also
+   have :geometry.gpkg/rowid on them, containing the sqlite internal
+   primary key of the row. For spatial tables this is defined to be the
+   feature ID (fid).
 
    If you know the geometries have a certain precision, you can
    pass a GeometryFactory with a PrecisionModel set. If you do
