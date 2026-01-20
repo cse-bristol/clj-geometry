@@ -58,12 +58,62 @@
        org.geotools.jdbc.JDBCDataStore)
   (.setLevel Level/SEVERE))
 
+(def ^:private ^SQLiteConfig sqlite-config
+  "SQLite config, optimised for write speed."
+  (doto (SQLiteConfig.)
+    (.setJournalMode SQLiteConfig$JournalMode/WAL)
+    (.setPragma SQLiteConfig$Pragma/SYNCHRONOUS "OFF")
+    (.setTransactionMode SQLiteConfig$TransactionMode/DEFERRED)
+    (.setReadUncommited true)
+    ;; (.setLockingMode SQLiteConfig$LockingMode/EXCLUSIVE)
+    (.setPragma SQLiteConfig$Pragma/MMAP_SIZE
+                (str (* 1024 1024 1024)) ;; 1G
+                )))
+
+(defn- open-for-writing
+  "Open a gpkg for writing spatial data via the geotools APIs.
+
+   Also sets the batch insert size (via reflection)."
+  ^GeoPackage [file batch-insert-size]
+  (let [geopackage (GeoPackage. (io/as-file file) sqlite-config nil)]
+    (.init geopackage)
+    (let [m (.getDeclaredMethod GeoPackage "dataStore" nil)]
+      (.setAccessible m true)
+      (let [ds (.invoke m geopackage nil)]
+        (.setBatchInsertSize ds batch-insert-size)))
+    geopackage))
+
+(defn- open-sqlite
+  "Open a gpkg for general SQL operations via JDBC
+  This also uses geotools to do some geopackage housekeeping."
+  [file]
+  (let [connection
+        (org.sqlite.JDBC/createConnection
+         (format "jdbc:sqlite:%s"
+                 (.getCanonicalPath (io/as-file file)))
+         (.toProperties sqlite-config))]
+    (let [m (.getDeclaredMethod GeoPackage "init"
+                                (into-array [java.sql.Connection]))]
+      (.setAccessible m true)
+      (.invoke m nil (into-array Object [connection])))
+    connection))
+
 (defn- sqlite-query! [file query-params]
-  (with-open [conn (jdbc/get-connection
-                    {:dbtype "sqlite"
-                     :dbname (.getCanonicalPath (io/as-file file))})]
+  (with-open [conn (open-sqlite file)]
     (jdbc/with-transaction [tx conn]
       (jdbc/execute! tx query-params))))
+
+(defn- escape-identifier
+  "Return a version of `identfier` safe for use in an sql string.
+
+  This will quote it and escape any embedded quotes. Needed because
+  table/column names cannot be query parameters. next.jdbc has
+  functions like this but they do not support field names that contain
+  quotes, or periods."
+  ([identifier]
+   (str \" (string/replace (name identifier) #"\"" "\"\"") \"))
+  ([table col]
+   (str (escape-identifier table) "." (escape-identifier col))))
 
 (defn table-names
   "Get the tables present in the geopackage or sqlite database, as a
@@ -82,14 +132,20 @@
             (.dispose store)
             (.close geopackage))))
       (->> [(if include-system?
-               "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
-               "SELECT name FROM sqlite_master WHERE type IN ('table','view')
+              "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+              "SELECT name FROM sqlite_master WHERE type IN ('table','view')
                      AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'gpkg_%'
                      AND name NOT LIKE 'rtree_%'")]
            (sqlite-query! file)
            (map :sqlite_master/name)
            (set)))))
 
+(defn column-names [file table]
+  (->> (sqlite-query!
+        file
+        [(format "PRAGMA table_info(%s)" (escape-identifier table))])
+       (map :name)
+       (set)))
 (defn- ->crs [x]
   (cond (string? x) (CRS/decode x true)
         (integer? x) (CRS/decode (str "EPSG:" x) true)
@@ -412,39 +468,6 @@
         :else
         (throw (ex-info "Unable to infer schema for value" {:value feature}))))
 
-(def ^:private ^SQLiteConfig sqlite-config
-  "SQLite config, optimised for write speed."
-  (doto (SQLiteConfig.)
-    (.setJournalMode SQLiteConfig$JournalMode/WAL)
-    (.setPragma SQLiteConfig$Pragma/SYNCHRONOUS "OFF")
-    (.setTransactionMode SQLiteConfig$TransactionMode/DEFERRED)
-    (.setReadUncommited true)
-    ;; (.setLockingMode SQLiteConfig$LockingMode/EXCLUSIVE)
-    (.setPragma SQLiteConfig$Pragma/MMAP_SIZE
-                (str (* 1024 1024 1024)) ;; 1G
-                )))
-
-(defn- open-for-writing
-  "Open a gpkg for writing spatial data via the geotools APIs.
-
-   Also sets the batch insert size (via reflection)."
-  ^GeoPackage [file batch-insert-size]
-  (let [geopackage (GeoPackage. (io/as-file file) sqlite-config nil)]
-    (.init geopackage)
-    (let [m (.getDeclaredMethod GeoPackage "dataStore" nil)]
-      (.setAccessible m true)
-      (let [ds (.invoke m geopackage nil)]
-        (.setBatchInsertSize ds batch-insert-size)))
-    geopackage))
-
-(defn- open-sqlite
-  "Open a gpkg for general SQL operations via JDBC"
-  [file]
-  (org.sqlite.JDBC/createConnection
-   (format "jdbc:sqlite:%s"
-           (.getCanonicalPath (io/as-file file)))
-   (.toProperties sqlite-config)))
-
 (defn- spec-geom-field
   "Get the spec for the (first) geometry field from a schema."
   [spec]
@@ -535,18 +558,6 @@
       (.getMaxY layer-extent)
       table-name]))
   file)
-
-(defn- escape-identifier
-  "Return a version of `identfier` safe for use in an sql string.
-
-  This will quote it and escape any embedded quotes. Needed because
-  table/column names cannot be query parameters. next.jdbc has
-  functions like this but they do not support field names that contain
-  quotes, or periods."
-  ([identifier]
-   (str \" (string/replace (name identifier) #"\"" "\"\"") \"))
-  ([table col]
-   (str (escape-identifier table) "." (escape-identifier col))))
 
 (defn drop-table [file table-name]
   (try (with-open [ds (DataStoreFinder/getDataStore
@@ -817,10 +828,7 @@
                   (doseq [col existing]
                     (jdbc/execute!
                      tx
-                     [(let [s (format "ALTER TABLE %s DROP COLUMN %s" (escape-identifier table) (escape-identifier col))]
-                        (println s)
-                        s
-                        )]))
+                     [(format "ALTER TABLE %s DROP COLUMN %s" (escape-identifier table) (escape-identifier col))]))
                   
                   (and (seq existing) (= :set-null if-exists))
                   (jdbc/execute!
