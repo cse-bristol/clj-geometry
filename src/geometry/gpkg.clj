@@ -146,6 +146,35 @@
         [(format "PRAGMA table_info(%s)" (escape-identifier table))])
        (map :name)
        (set)))
+
+(defn geometry-column
+  "Get the geometry column information for `table`; geopackage spec
+  requires that a table only has one geometry column, so this is
+  generally safe to use as 'the geometry'.
+
+  When reading with `open`, all geometries are put into the :geometry
+  part of a Feature record, so we lose the identity of the geometry
+  column; sometimes it is useful to know what the geometry column is
+  called in a table (eg. for `amend` to update it)."
+  [file table]
+
+  (some-> (sqlite-query!
+           file
+           ["SELECT column_name \"column-name\", geometry_type_name \"geometry-type\", srs_id srid FROM gpkg_geometry_columns WHERE table_name = ?" table])
+          (first)
+          (update-keys (comp keyword name))
+          (update :geometry-type
+                  #(case %
+                     "GEOMETRY" :geometry
+                     "GEOMETRYCOLLECTION" :geometry-collection
+                     "POINT" :point
+                     "LINESTRING" :line-string
+                     "POLYGON" :polygon
+                     "MULTIPOINT" :multi-point
+                     "MULTILINESTRING" :multi-line-string
+                     "MULTIPOLYGON" :multi-polygon
+                     %))))
+
 (defn- ->crs [x]
   (cond (string? x) (CRS/decode x true)
         (integer? x) (CRS/decode (str "EPSG:" x) true)
