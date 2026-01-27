@@ -31,9 +31,9 @@
       ;; read them back and compare
 
       (with-open [in (sut/open f :table-name "test-table")]
-        (t/is (= (set [{:geometry nil "id" 3 :table "test-table" :crs "EPSG:27700" "b" "ghi" "c" 0 "inf" ##Inf}
-                       {:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "abc" "c" 1 "inf" ##Inf}
-                       {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "def" "c" 0 "inf" ##Inf}])
+        (t/is (= (set [{:geometry nil "id" 3 :table "test-table" :crs "EPSG:27700" "b" "ghi" "c" false "inf" ##Inf}
+                       {:geometry (g/make-point 1 2) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "abc" "c" true "inf" ##Inf}
+                       {:geometry (g/make-point 4 5) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "def" "c" false "inf" ##Inf}])
 
                  ;; we map into {} to strip off the feature type
                  ;; since we want to do a simple comparison here
@@ -89,8 +89,8 @@
 
       ;; read the non-spatial data:
       (with-open [in (sut/open f :table-name "sqlite-table")]
-        (t/is (= [{:geometry nil "a" 1 "b" "aaa" "c" 1 "inf" ##Inf :table "sqlite-table" :crs nil}
-                  {:geometry nil "a" 2 "b" "bbb" "c" 0 "inf" ##Inf :table "sqlite-table" :crs nil}]
+        (t/is (= [{:geometry nil "a" 1 "b" "aaa" "c" true "inf" ##Inf :table "sqlite-table" :crs nil}
+                  {:geometry nil "a" 2 "b" "bbb" "c" false "inf" ##Inf :table "sqlite-table" :crs nil}]
                  (vec (map #(into {} %) (sut/features in))))))
 
       (catch Exception e (prn e) (throw e))
@@ -130,8 +130,8 @@
       (with-open [in (sut/open f :spatial-only? false :key-transform keyword)]
         (t/is (= [{:geometry (g/make-point 1 2) :id 1 :table "test-table" :crs "EPSG:27700"}
                   {:geometry (g/make-point 4 5) :id 2 :table "test-table" :crs "EPSG:27700"}
-                  {:geometry nil :a 1 :b "aaa" :c 1 :inf ##Inf :table "data-table" :crs nil}
-                  {:geometry nil :a 2 :b "bbb" :c 0 :inf ##Inf :table "data-table" :crs nil}]
+                  {:geometry nil :a 1 :b "aaa" :c true :inf ##Inf :table "data-table" :crs nil}
+                  {:geometry nil :a 2 :b "bbb" :c false :inf ##Inf :table "data-table" :crs nil}]
                  (vec (map #(into {} %) (sut/features in))))))
 
       (catch Exception e (prn e) (throw e))
@@ -356,7 +356,7 @@
             (-> feature
                 (g/update-geometry (g/make-point 3 3))
                 (update "b" #(.toUpperCase %))
-                (update "c" #(if (zero? %) true false))))
+                (update "c" not)))
           (sut/features in)))
        :schema
        ;; update these fields only
@@ -368,9 +368,9 @@
       (t/is
        (= (group-by
            #(get % "id")
-           [{:geometry (g/make-point 3 3) "id" 3 :table "test-table" :crs "EPSG:27700" "b" "GHI" "c" 1 "inf" ##Inf}
-            {:geometry (g/make-point 3 3) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "ABC" "c" 0 "inf" ##Inf}
-            {:geometry (g/make-point 3 3) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "DEF" "c" 1 "inf" ##Inf}])
+           [{:geometry (g/make-point 3 3) "id" 3 :table "test-table" :crs "EPSG:27700" "b" "GHI" "c" true "inf" ##Inf}
+            {:geometry (g/make-point 3 3) "id" 1 :table "test-table" :crs "EPSG:27700" "b" "ABC" "c" false "inf" ##Inf}
+            {:geometry (g/make-point 3 3) "id" 2 :table "test-table" :crs "EPSG:27700" "b" "DEF" "c" true "inf" ##Inf}])
 
           (with-open [in (sut/open f :table-name "test-table")]
             (group-by #(get % "id")
@@ -410,7 +410,7 @@
           (fn [feature]
             (-> feature
                 (update "b" #(.toUpperCase %))
-                (update "c" #(if (zero? %) true false))))
+                (update "c" not)))
           (sut/features in)))
        
        :schema {"b" {:type :string} "c" {:type :boolean}})
@@ -419,9 +419,9 @@
       (t/is
        (= (group-by
            #(get % "id")
-           [{"id" 3 :table "test-table" "b" "GHI" "c" 1 "inf" ##Inf}
-            {"id" 1 :table "test-table" "b" "ABC" "c" 0 "inf" ##Inf}
-            {"id" 2 :table "test-table" "b" "DEF" "c" 1 "inf" ##Inf}])
+           [{"id" 3 :table "test-table" "b" "GHI" "c" true "inf" ##Inf}
+            {"id" 1 :table "test-table" "b" "ABC" "c" false "inf" ##Inf}
+            {"id" 2 :table "test-table" "b" "DEF" "c" true "inf" ##Inf}])
 
           (with-open [in (sut/open f :table-name "test-table")]
             (group-by #(get % "id")
@@ -444,7 +444,7 @@
        f
        "test-table"
 
-       [{"geometry" (g/make-point 1 2) "id" 1 "b" "abc" :c true} ;; should get duplicated
+       [{"geometry" (g/make-point 1 2) "id" 1 "b" "abc" :c true} ;; should get duplicated and c flipped
         {"geometry" (g/make-point 1 3) "id" 2 "b" "abc" :c true} ;; should get changed
         {"geometry" (g/make-point 1 4) "id" 3 "b" "qwe" :c true} ;; should be untouched
         ]
@@ -466,12 +466,12 @@
               1 [(-> feature
                      (g/update-geometry (g/make-point 3 3))
                      (update "b" #(str "ONE " (.toUpperCase %)))
-                     (update "c" #(if (zero? %) false true)))
+                     (update "c" not))
                  
                  (-> feature
                      (g/update-geometry (g/make-point 4 4))
                      (update "b" #(str "TWO " (.toUpperCase %)))
-                     (update "c" #(if (zero? %) false true)))
+                     (update "c" not))
                  ]
 
               2 [(assoc feature "b" "ONLY")]
@@ -491,12 +491,12 @@
       (t/is
        (= (group-by
            #(get % "id")
-           [{:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 3 3) "id" 1 "b" "ONE ABC" "c" 1}
-            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 4 4) "id" 1 "b" "TWO ABC" "c" 1}
+           [{:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 3 3) "id" 1 "b" "ONE ABC" "c" false}
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 4 4) "id" 1 "b" "TWO ABC" "c" false}
             
-            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 3) "id" 2 "b" "ONLY" "c" 1}
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 3) "id" 2 "b" "ONLY" "c" true}
             
-            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 4) "id" 3 "b" "qwe" "c" 1}
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 4) "id" 3 "b" "qwe" "c" true}
 
             ])
 
@@ -547,12 +547,12 @@
                1 [(-> feature
                       (g/update-geometry (g/make-point 3 3))
                       (update "b" #(str "ONE " (.toUpperCase %)))
-                      (update "c" #(if (zero? %) false true)))
+                      (update "c" not))
                   
                   (-> feature
                       (g/update-geometry (g/make-point 4 4))
                       (update "b" #(str "TWO " (.toUpperCase %)))
-                      (update "c" #(if (zero? %) false true)))
+                      (update "c" not))
                   ]
 
                2 [(assoc feature "b" "ONLY")]
@@ -572,14 +572,14 @@
       (t/is
        (= (group-by
            #(get % "id")
-           [{:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 3 3) "id" 1 "b" "ONE ABC" "c" 1}
-            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 4 4) "id" 1 "b" "TWO ABC" "c" 1}
+           [{:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 3 3) "id" 1 "b" "ONE ABC" "c" false}
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 4 4) "id" 1 "b" "TWO ABC" "c" false}
             
-            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 3) "id" 2 "b" "ONLY" "c" 1}
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 3) "id" 2 "b" "ONLY" "c" true}
             
-            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 4) "id" 3 "b" "qwe" "c" 1}
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 4) "id" 3 "b" "qwe" "c" true}
 
-            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 99 99) "id" nil "b" "NEW" "c" 0}
+            {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 99 99) "id" nil "b" "NEW" "c" false}
 
             ])
 
