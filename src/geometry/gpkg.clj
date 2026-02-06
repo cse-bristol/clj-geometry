@@ -751,9 +751,6 @@
   if :accessor is not provided, the column name is used to get values
   from each row for this column. Otherwise accessor is invoked on each
   row.
-
-  When writing non-spatial tables, you can use :not-null, :primary-key
-  and :foreign-key. These don't work for non-spatial tables at the moment.
   
   Because of how sqlite works, these are only guaranteed to take effect
   if the target table doesn't exist
