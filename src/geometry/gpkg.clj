@@ -831,7 +831,13 @@
                                    table-name
                                    (->geotools-schema table-name spec)
                                    conn)))
-             (catch java.lang.IllegalArgumentException _))
+             (catch java.lang.IllegalArgumentException _)
+             (catch java.sql.SQLException e
+               ;; We expect this exception if the table already exists, it's fine
+               ;; and we just assume things are OK. Things will break later if the
+               ;; existing table has the wrong shape
+               (when-not (.contains (.getMessage e) "[SQLITE_CONSTRAINT_UNIQUE]")
+                 (throw e))))
 
            (when add-spatial-index
              (try (.createSpatialIndex geopackage feature-entry)
