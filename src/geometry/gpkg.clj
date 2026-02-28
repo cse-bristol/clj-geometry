@@ -58,13 +58,22 @@
        org.geotools.jdbc.JDBCDataStore)
   (.setLevel Level/SEVERE))
 
+(defn- set-read-uncommitted
+  "There is a speling mistak in the SQLite java API, which got corrected
+  at some point. This makes us forward compatible for consumers that
+  overide the dependency on the sqlite driver"
+  [config]
+  (try (.setReadUncommitted config true)
+       (catch Exception e
+         (.setReadUncommited config true))))
+
 (def ^:private ^SQLiteConfig sqlite-config
   "SQLite config, optimised for write speed."
   (doto (SQLiteConfig.)
     (.setJournalMode SQLiteConfig$JournalMode/WAL)
     (.setPragma SQLiteConfig$Pragma/SYNCHRONOUS "OFF")
     (.setTransactionMode SQLiteConfig$TransactionMode/DEFERRED)
-    (.setReadUncommited true)
+    (set-read-uncommitted)
     ;; (.setLockingMode SQLiteConfig$LockingMode/EXCLUSIVE)
     (.setPragma SQLiteConfig$Pragma/MMAP_SIZE
                 (str (* 1024 1024 1024)) ;; 1G
