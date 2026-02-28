@@ -914,10 +914,15 @@
        nil))))
 
 (defn amend
-  "Update existing rows in `table` within `gpkg`.
-  `values` are the new values to write in. They should have ::rowid on
-  them so we can join. `gpkg/read` above will extract rowid if you ask
-  for it.
+  "Update existing rows in `table` within `gpkg`. `values` are the new values to write in.
+
+  If you know there is a PK you can use you can supply :primary-key [\"col name\" accessor]
+
+  This is probaly safer than the fallback which is to use rowid.
+
+  `gpkg/read` above will extract rowid if you ask for it, and you can
+  join back, but rowid can change during a transaction if there are
+  gaps in the rowid sequence and the table is vacuumed.
 
   The expected usage is that you pull rows out with `read` including
   rowid, update / create some columns, and then call `amend` with a
@@ -933,7 +938,7 @@
   
   `method` can be `:update-set`, `:left-join`, `:outer-join`
 
-  - `:update-set` works as UPDATE table SET cols = vals WHERE table.rowid = input.rowid
+  - `:update-set` works as UPDATE table SET cols = vals WHERE table-rowid = input.rowid
     
     unmatched rows are affected according to `if-exists`
     the inputs must be distinct on ::rowid
@@ -943,6 +948,7 @@
     if inputs are not distinct on ::rowid, new rows are created. old rowids are broken
     so any internal joins / triggers etc related to these will be damaged.
   - `:outer-join` does `:left-join` and then inserts unmatched rows
+  - `:right-join` does `:outer-join` and then deletes rows that are unmatched in the update
 
   The actual implementation here is:
   1. insert data into a temp table
@@ -950,30 +956,38 @@
   3. add any missing columns
   4. update the temp table to mark repeat rowids (for left-join type behaviour)
   5. issue UPDATE SET to copy cols for non-repeating rows
-  6. issue INSERT INTO (SELECT FROM JOIN) for repeating rows
-  7. issue DELETE for original copies of repeating rows
+  6. issue DELETE for anything not matched, if right-join
+  7. issue INSERT INTO (SELECT FROM JOIN) for repeating rows
+  8. issue DELETE for original copies of repeating rows
 
   This routine will at least preserve indexes and FK relationships on the target table.
 
   It may fail if the result is not valid.
   "
   [gpkg table values
-   & {:keys [schema if-exists method]
-      :or {if-exists :set-null method :update-set}}]
+   & {:keys [schema if-exists method primary-key]
+      :or {if-exists :set-null method :update-set
+           primary-key ["rowid" ::rowid]}}]
 
-  {:pre [(#{:update-set :left-join :outer-join} method)]}
+  {:pre [(#{:update-set :left-join :right-join :outer-join} method)]}
   
-  (let [escape-identifier (memoize escape-identifier)
+  (let [[pk-col pk-accessor] primary-key
+        
+        escape-identifier (memoize escape-identifier)
         schema (or schema (infer-spec (first values)))
         temp-table "__temp__"
-        rowid-col "_original_rowid"]
+        rowid-col "_original_rowid"
+
+        temp-orig-rowid (escape-identifier temp-table rowid-col)
+        table-rowid     (escape-identifier table pk-col)
+        ]
     (try
       ;; first write the new columns into our temporary table
       (write
        gpkg temp-table values
        :schema (conj
                 schema
-                [rowid-col {:type :long :accessor ::rowid}]))
+                [rowid-col {:type :long :accessor pk-accessor}]))
 
       (with-open [conn (open-sqlite gpkg)]
         (jdbc/with-transaction [tx conn]
@@ -1016,8 +1030,6 @@
                              ", "
                              (for [col existing] (str (escape-identifier col) " = NULL"))))]))
 
-            
-            
             (doseq [col src-cols]
               (when (missing (:name col))
                 (jdbc/execute!
@@ -1038,8 +1050,9 @@
                                 (escape-identifier temp-table) ;; update %s set
                                 (escape-identifier rowid-col) ;; %s jid
                                 (escape-identifier temp-table) ;; from %s
-                                (escape-identifier temp-table rowid-col) ;; group by %s
-                                (escape-identifier temp-table rowid-col))]) ;; where %s = 
+                                
+                                temp-orig-rowid ;; group by %s
+                                temp-orig-rowid)]) ;; where %s = 
                       (first)
                       (:next.jdbc/update-count))]
               (when (and (pos? non-singular-count)
@@ -1061,16 +1074,25 @@
                        (for [col src-cols]
                          (str (escape-identifier (:name col)) " = " (escape-identifier temp-table (:name col)))))
                       (escape-identifier temp-table)
-                      (escape-identifier table "rowid") (escape-identifier temp-table rowid-col)
+                      table-rowid temp-orig-rowid
                       (escape-identifier temp-table))])
+
+            (when (= method :right-join)
+              ;; delete existing rows that are unmatched by any of the rows in temp table
+              (jdbc/execute!
+               tx [(format "DELETE FROM %s WHERE NOT EXISTS (SELECT * FROM %s WHERE %s = %s)"
+                           (escape-identifier table)
+                           (escape-identifier temp-table)
+                           temp-orig-rowid
+                           table-rowid)]))
             
-            (when (or (= method :left-join) (= method :outer-join))
+            (when (or (= method :left-join) (= method :outer-join) (= method :right-join))
               ;; left join and outer join both need the multiplied up rows inserting
               (let [set-cols ;; all the cols we are setting
                     (for [col src-cols]
                       [(escape-identifier (:name col))
                        (format "(CASE WHEN %s NOT NULL THEN %s ELSE %s END) AS %s"
-                               (escape-identifier temp-table rowid-col)
+                               temp-orig-rowid
                                (escape-identifier temp-table (:name col))
                                (escape-identifier table (:name col))
                                (escape-identifier (:name col)))])
@@ -1094,29 +1116,32 @@
                    
                    (escape-identifier table)
                    (escape-identifier temp-table)
-                   (escape-identifier table "rowid")
-                   (escape-identifier temp-table rowid-col))])
+                   table-rowid
+                   temp-orig-rowid)])
 
-                (when (= method :outer-join)
+                (when (or (= method :outer-join) (= method :right-join))
                   (jdbc/execute!
                    tx
                    [(format
-                     "INSERT INTO %s (%s) SELECT %s FROM %s WHERE %s IS NULL OR %s NOT IN (SELECT rowid FROM %s)"
+                     "INSERT INTO %s (%s) SELECT %s FROM %s WHERE %s IS NULL OR %s NOT IN (SELECT %s FROM %s)"
                      (escape-identifier table)
                      (string/join "," (map first set-cols))
                      ;; we don't need case when here
                      (string/join ", " (map first set-cols))
                      (escape-identifier temp-table)
-                     (escape-identifier temp-table rowid-col)
-                     (escape-identifier temp-table rowid-col)
+                     temp-orig-rowid
+                     temp-orig-rowid
+                     table-rowid
                      (escape-identifier table))])))
 
               ;; delete original rows after they have been multiplied up
               (jdbc/execute!
-               tx [(format "DELETE FROM %s WHERE rowid IN (SELECT %s FROM %s WHERE NOT(__singular))"
+               tx [(format "DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE NOT(__singular))"
                            (escape-identifier table)
-                           (escape-identifier rowid-col)
-                           (escape-identifier temp-table))])))))
+                           table-rowid
+                           temp-orig-rowid
+                           (escape-identifier temp-table))])
+              ))))
       (finally
         (drop-table gpkg temp-table)))))
 
