@@ -384,7 +384,8 @@
                  (let [known (table-names gpkg :include-system? true)]
                    (when-not (known table-name)
                      (throw (ex-info "Table not found in geopackage"
-                                     {:file gpkg
+                                     {::missing-table table-name
+                                      :file gpkg
                                       :table table-name
                                       :tables known})))
                    [table-name])
