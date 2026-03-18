@@ -373,97 +373,100 @@
            :or {key-transform identity
                 geometry-factory g/*factory*}}]
   (assert (.exists (io/as-file gpkg)))
+  
   (let [store ^JDBCDataStore (DataStoreFinder/getDataStore
                               {"dbtype" "geopkg"
                                "database" (.getCanonicalPath (io/as-file gpkg))
-                               "read-only" true})
+                               "read-only" true})]
+    (try
+      (let [_ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
+            
+            tables (if table-name
+                     (let [known (table-names gpkg :include-system? true)]
+                       (when-not (known table-name)
+                         (throw (ex-info "Table not found in geopackage"
+                                         {::missing-table table-name
+                                          :file gpkg
+                                          :table table-name
+                                          :tables known})))
+                       [table-name])
+                     (into [] (table-names gpkg :spatial-only? spatial-only?)))
 
-        _ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
+            state (volatile! {:table nil
+                              :tables tables
+                              :iterator nil
+                              :closed false})
 
-        tables (if table-name
-                 (let [known (table-names gpkg :include-system? true)]
-                   (when-not (known table-name)
-                     (throw (ex-info "Table not found in geopackage"
-                                     {::missing-table table-name
-                                      :file gpkg
-                                      :table table-name
-                                      :tables known})))
-                   [table-name])
-                 (into [] (table-names gpkg :spatial-only? spatial-only?)))
+            maybe-advance!
+            (fn maybe-advance! [{:keys [^java.util.Iterator iterator tables] :as state}]
+              (when (:closed state) (throw (ex-info "Iterating on a geopackage that has been closed" {:input gpkg :state state})))
+              (if (and iterator (.hasNext iterator))
+                state ;; just continue with this iterator
 
-        state (volatile! {:table nil
-                          :tables tables
-                          :iterator nil
-                          :closed false})
+                (if (seq tables) ;; there are more tables, start next table
+                  (let [[^String table & tables] tables
+                        source ^JDBCFeatureStore (try
+                                                   (.getFeatureSource store table)
+                                                   (catch Exception e
+                                                     (if (re-find #"Schema '.+' does not exist." (.getMessage e))
+                                                       nil
+                                                       (throw e))))]
+                    (when iterator (.close iterator))
+                    (let [next-state
+                          (if source
+                            ;; spatial table
+                            (let [crs (-> source .getInfo .getCRS (CRS/lookupIdentifier true))
+                                  crs-transform (when to-crs
+                                                  (let [from-crs (->crs crs)
+                                                        to-crs (->crs to-crs)]
+                                                    (CRS/findMathTransform from-crs to-crs true)))]
+                              (assoc state
+                                     :table table
+                                     :tables tables
+                                     :iterator (gpkg-iterator source table crs crs-transform key-transform rowids?)))
+                            ;; non-spatial table
+                            (assoc state
+                                   :table table
+                                   :tables tables
+                                   :iterator (sqlite-iterator gpkg table key-transform rowids?)))]
 
-        maybe-advance!
-        (fn maybe-advance! [{:keys [^java.util.Iterator iterator tables] :as state}]
-          (when (:closed state) (throw (ex-info "Iterating on a geopackage that has been closed" {:input gpkg :state state})))
-          (if (and iterator (.hasNext iterator))
-            state ;; just continue with this iterator
+                      ;; this is to deal with empty tables - the Iterator implementation that's returned
+                      ;; below mustn't (not (.hasNext)) until we have got to the end, so if we've made an
+                      ;; iterator for a table with nothing in we need to move onto the next table
+                      (if (and (:iterator next-state)
+                               (not (.hasNext (:iterator next-state))))
+                        (maybe-advance! next-state)
+                        next-state)))
 
-            (if (seq tables) ;; there are more tables, start next table
-              (let [[^String table & tables] tables
-                    source ^JDBCFeatureStore (try
-                                               (.getFeatureSource store table)
-                                               (catch Exception e
-                                                 (if (re-find #"Schema '.+' does not exist." (.getMessage e))
-                                                   nil
-                                                   (throw e))))]
-                (when iterator (.close iterator))
-                (let [next-state
-                      (if source
-                        ;; spatial table
-                        (let [crs (-> source .getInfo .getCRS (CRS/lookupIdentifier true))
-                              crs-transform (when to-crs
-                                              (let [from-crs (->crs crs)
-                                                    to-crs (->crs to-crs)]
-                                                (CRS/findMathTransform from-crs to-crs true)))]
-                          (assoc state
-                                 :table table
-                                 :tables tables
-                                 :iterator (gpkg-iterator source table crs crs-transform key-transform rowids?)))
-                        ;; non-spatial table
-                        (assoc state
-                               :table table
-                               :tables tables
-                               :iterator (sqlite-iterator gpkg table key-transform rowids?)))]
+                  ;; reached the end
+                  (do
+                    (when iterator (.close iterator))
+                    {:table nil :tables nil :iterator nil :closed false}))))
+            ]
 
-                  ;; this is to deal with empty tables - the Iterator implementation that's returned
-                  ;; below mustn't (not (.hasNext)) until we have got to the end, so if we've made an
-                  ;; iterator for a table with nothing in we need to move onto the next table
-                  (if (and (:iterator next-state)
-                           (not (.hasNext (:iterator next-state))))
-                    (maybe-advance! next-state)
-                    next-state)))
+        (reify
+          java.lang.AutoCloseable
+          (close [_]
+            ;; close feature iterator
+            (try (vswap! state (fn [state]
+                                 (when-let [^java.io.Closeable i (:iterator state)] (.close i))
+                                 (assoc state :iterator nil :closed true)))
+                 (finally (.dispose store))))
 
-              ;; reached the end
-              (do
-                (when iterator (.close iterator))
-                {:table nil :tables nil :iterator nil :closed false}))))
-        ]
+          java.util.Iterator
+          (next [_]
+            (let [state (vswap! state maybe-advance!)]
+              (when-let [^java.util.Iterator iterator (:iterator state)]
+                (.next iterator))))
 
-    (reify
-      java.lang.AutoCloseable
-      (close [_]
-        ;; close feature iterator
-        (try (vswap! state (fn [state]
-                             (when-let [^java.io.Closeable i (:iterator state)] (.close i))
-                             (assoc state :iterator nil :closed true)))
-             (finally (.dispose store))))
-
-      java.util.Iterator
-      (next [_]
-        (let [state (vswap! state maybe-advance!)]
-          (when-let [^java.util.Iterator iterator (:iterator state)]
-            (.next iterator))))
-
-      (hasNext [_]
-        (let [state (vswap! state maybe-advance!)]
-          (if-let [^java.util.Iterator iterator (:iterator state)]
-            (.hasNext iterator)
-            false)))
-      )))
+          (hasNext [_]
+            (let [state (vswap! state maybe-advance!)]
+              (if-let [^java.util.Iterator iterator (:iterator state)]
+                (.hasNext iterator)
+                false)))))
+      (catch Throwable e
+        (.dispose store)
+        (throw e)))))
 
 (defn- kv-type [k v]
   [(name k)
