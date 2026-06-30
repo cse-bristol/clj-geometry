@@ -24,6 +24,11 @@
   which should be avoided in production, as it won't work properly
   if any columns have null values in the first row. In that case you
   will do well to supply the :schema argument to write.
+
+  This namespace talks to SQLite directly (via the xerial sqlite-jdbc
+  driver and next.jdbc) and implements the GeoPackage spec itself,
+  rather than going through GeoTools. The geometry blob codec lives in
+  geometry.gpkg.geom and CRS handling in geometry.gpkg.crs.
   "
 
   (:require [clojure.java.io :as io]
@@ -31,32 +36,19 @@
             [clojure.set :as set]
             [geometry.core :as g]
             [geometry.feature :as f]
+            [geometry.gpkg.geom :as geom]
+            [geometry.gpkg.crs :as crs]
             [next.jdbc :as jdbc]
             [taoensso.timbre :as log])
-  (:import [org.geotools.data DataStoreFinder DataUtilities DefaultTransaction]
-           [org.geotools.feature.simple SimpleFeatureImpl]
-           [org.geotools.feature.simple SimpleFeatureImpl$Attribute]
-           [org.geotools.geometry.jts Geometries JTS ReferencedEnvelope]
-           [org.geotools.geopkg FeatureEntry GeoPackage]
-           [org.geotools.jdbc JDBCDataStore JDBCFeatureStore]
-           [org.geotools.referencing CRS]
-           [org.locationtech.jts.geom Geometry Envelope]
-           [org.opengis.referencing.operation MathTransform]
-           [org.geotools.jdbc JDBCFeatureReader$ResultSetFeature]
+  (:import [org.locationtech.jts.geom Geometry Envelope GeometryFactory]
+           [org.locationtech.jts.io WKBReader]
+           [java.lang.reflect Method]
            [org.sqlite
+            Function
             SQLiteConfig
             SQLiteConfig$JournalMode
             SQLiteConfig$Pragma
-            SQLiteConfig$TransactionMode]
-           [java.util.logging Level]))
-
-;; SHUT UP PLEASE. I note that this is considered bad, because it
-;; means we cannot programmatically override this at runtime but
-;; frankly I am not sure we want that ability.
-;; All the alternative solutions for this are inordinately complicated.
-(doto (org.geotools.util.logging.Logging/getLogger
-       org.geotools.jdbc.JDBCDataStore)
-  (.setLevel Level/SEVERE))
+            SQLiteConfig$TransactionMode]))
 
 (defn- set-read-uncommitted
   "There is a speling mistak in the SQLite java API, which got corrected
@@ -74,57 +66,92 @@
     (.setPragma SQLiteConfig$Pragma/SYNCHRONOUS "OFF")
     (.setTransactionMode SQLiteConfig$TransactionMode/DEFERRED)
     (set-read-uncommitted)
-    ;; (.setLockingMode SQLiteConfig$LockingMode/EXCLUSIVE)
     (.setPragma SQLiteConfig$Pragma/MMAP_SIZE
                 (str (* 1024 1024 1024)) ;; 1G
                 )))
 
-(let [get-datastore (.getDeclaredMethod GeoPackage "dataStore" nil)]
-  (.setAccessible get-datastore true)
-  
-  (defn- geopackage-datastore
-    ^JDBCDataStore
-    [^GeoPackage g]
-    (.invoke get-datastore g nil)))
+;; ---------------------------------------------------------------------------
+;; GeoPackage ST_* SQL functions.
+;;
+;; The rtree spatial-index triggers (see `rtree-trigger-sqls`) call
+;; ST_MinX/ST_MaxX/ST_MinY/ST_MaxY/ST_IsEmpty on geometry blobs. We
+;; register Clojure implementations on the connection so the triggers
+;; maintain the index without GeoTools. org.sqlite.Function's value_blob
+;; / result methods are protected, so we call them by reflection.
 
-(defn- open-for-writing
-  "Open a gpkg for writing spatial data via the geotools APIs.
+(defn- ^Method declared-method [^String name & param-types]
+  (doto (.getDeclaredMethod Function name (into-array Class param-types))
+    (.setAccessible true)))
 
-   Also sets the batch insert size (via reflection)."
-  ^GeoPackage [file batch-insert-size]
-  (let [geopackage (GeoPackage. (io/as-file file) sqlite-config nil)]
-    (.init geopackage)
-    (-> geopackage
-        (geopackage-datastore)
-        (.setBatchInsertSize batch-insert-size))
-    geopackage))
+(def ^:private ^Method m-value-blob   (declared-method "value_blob" Integer/TYPE))
+(def ^:private ^Method m-result-double (declared-method "result" Double/TYPE))
+(def ^:private ^Method m-result-int    (declared-method "result" Integer/TYPE))
+(def ^:private ^Method m-result-null   (declared-method "result"))
 
-(defn- geopackage-connection ^java.sql.Connection
-  [^GeoPackage geopackage]
-  (.getConnection (.getDataSource geopackage)))
+(def ^:private ^WKBReader st-reader
+  "WKBReader for the ST_* functions; only used to recover envelopes, so
+   the default factory is fine. SQLite invokes functions single-threaded
+   on the connection, so sharing one reader is safe."
+  (geom/reader g/*factory*))
 
-(let [geopackage-init (.getDeclaredMethod GeoPackage "init"
-                                          (into-array [java.sql.Connection]))]
-  (.setAccessible geopackage-init true)
+(defn- envelope-function
+  "A scalar SQL Function returning (f envelope) as a double, where the
+   first argument is a GeoPackage geometry blob."
+  [f]
+  (proxy [Function] []
+    (xFunc []
+      (let [blob (.invoke m-value-blob this (object-array [(int 0)]))]
+        (if (nil? blob)
+          (.invoke m-result-null this (object-array 0))
+          (let [^Geometry gm (geom/decode blob st-reader)
+                e (.getEnvelopeInternal gm)]
+            (.invoke m-result-double this (object-array [(double (f e))]))))))))
 
-  (defn- open-sqlite
-    "Open a gpkg for general SQL operations via JDBC
-  This also uses geotools to do some geopackage housekeeping."
-    [file]
-    (if (instance? GeoPackage file)
-      (geopackage-connection file)
-      (let [connection
-            (org.sqlite.JDBC/createConnection
-             (format "jdbc:sqlite:%s"
-                     (.getCanonicalPath (io/as-file file)))
-             (.toProperties sqlite-config))]
-        (.invoke geopackage-init nil (into-array Object [connection]))
-        connection))))
+(defn- is-empty-function []
+  (proxy [Function] []
+    (xFunc []
+      (let [blob (.invoke m-value-blob this (object-array [(int 0)]))]
+        (if (nil? blob)
+          (.invoke m-result-int this (object-array [(int 1)]))
+          (let [^Geometry gm (geom/decode blob st-reader)]
+            (.invoke m-result-int this
+                     (object-array [(int (if (.isEmpty gm) 1 0))]))))))))
 
-(defn- sqlite-query! [file query-params]
-  (with-open [conn (open-sqlite file)]
-    (jdbc/with-transaction [tx conn]
-      (jdbc/execute! tx query-params))))
+(defn- register-gpkg-functions!
+  "Register the GeoPackage ST_* helper functions on `conn` so rtree
+   triggers work."
+  [^java.sql.Connection conn]
+  (Function/create conn "ST_MinX" (envelope-function (fn [^Envelope e] (.getMinX e))))
+  (Function/create conn "ST_MaxX" (envelope-function (fn [^Envelope e] (.getMaxX e))))
+  (Function/create conn "ST_MinY" (envelope-function (fn [^Envelope e] (.getMinY e))))
+  (Function/create conn "ST_MaxY" (envelope-function (fn [^Envelope e] (.getMaxY e))))
+  (Function/create conn "ST_IsEmpty" (is-empty-function)))
+
+;; ---------------------------------------------------------------------------
+;; Connections
+
+(defn- open-sqlite
+  "Open a writable JDBC connection to `file` with the ST_* functions
+   registered. Does not bootstrap the GeoPackage metadata tables (see
+   `bootstrap-gpkg!`); registering functions has no on-disk effect, so
+   this is safe to use for queries too."
+  ^java.sql.Connection [file]
+  (let [conn (org.sqlite.JDBC/createConnection
+              (format "jdbc:sqlite:%s" (.getCanonicalPath (io/as-file file)))
+              (.toProperties sqlite-config))]
+    (register-gpkg-functions! conn)
+    conn))
+
+(defn- read-datasource [file]
+  (jdbc/get-datasource
+   (format "jdbc:sqlite:file:%s?mode=ro&immutable=1"
+           (.getCanonicalPath (io/as-file file)))))
+
+(defn- sqlite-query!
+  "Run a read query against `file` over a read-only connection."
+  [file query-params]
+  (with-open [conn (jdbc/get-connection (read-datasource file))]
+    (jdbc/execute! conn query-params)))
 
 (defn- escape-identifier
   "Return a version of `identfier` safe for use in an sql string.
@@ -138,30 +165,105 @@
   ([table col]
    (str (escape-identifier table) "." (escape-identifier col))))
 
+;; ---------------------------------------------------------------------------
+;; GeoPackage metadata bootstrap
+
+(def ^:private gpkg-metadata-ddl
+  ["CREATE TABLE IF NOT EXISTS gpkg_spatial_ref_sys (
+      srs_name TEXT NOT NULL,
+      srs_id INTEGER NOT NULL PRIMARY KEY,
+      organization TEXT NOT NULL,
+      organization_coordsys_id INTEGER NOT NULL,
+      definition TEXT NOT NULL,
+      description TEXT)"
+   "CREATE TABLE IF NOT EXISTS gpkg_contents (
+      table_name TEXT NOT NULL PRIMARY KEY,
+      data_type TEXT NOT NULL,
+      identifier TEXT UNIQUE,
+      description TEXT DEFAULT '',
+      last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      min_x DOUBLE,
+      min_y DOUBLE,
+      max_x DOUBLE,
+      max_y DOUBLE,
+      srs_id INTEGER,
+      CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id))"
+   "CREATE TABLE IF NOT EXISTS gpkg_geometry_columns (
+      table_name TEXT NOT NULL,
+      column_name TEXT NOT NULL,
+      geometry_type_name TEXT NOT NULL,
+      srs_id INTEGER NOT NULL,
+      z TINYINT NOT NULL,
+      m TINYINT NOT NULL,
+      CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name),
+      CONSTRAINT uk_gc_table_name UNIQUE (table_name),
+      CONSTRAINT fk_gc_tn FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name),
+      CONSTRAINT fk_gc_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))"
+   "CREATE TABLE IF NOT EXISTS gpkg_extensions (
+      table_name TEXT,
+      column_name TEXT,
+      extension_name TEXT NOT NULL,
+      definition TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name))"])
+
+(defn- ensure-srs!
+  "Ensure a gpkg_spatial_ref_sys row exists for EPSG `srid`."
+  [tx srid]
+  (let [{:keys [srs_name organization organization_coordsys_id definition description]}
+        (crs/srs-row srid)]
+    (jdbc/execute!
+     tx
+     ["INSERT OR IGNORE INTO gpkg_spatial_ref_sys
+        (srs_name, srs_id, organization, organization_coordsys_id, definition, description)
+        VALUES (?,?,?,?,?,?)"
+      srs_name (int srid) organization (int organization_coordsys_id) definition description])))
+
+(defn- bootstrap-gpkg!
+  "Create the GeoPackage metadata tables (if absent) and the mandatory
+   default spatial reference systems on `conn`."
+  [^java.sql.Connection conn]
+  (jdbc/with-transaction [tx conn]
+    (.execute (.createStatement conn) "PRAGMA application_id = 1196444487")
+    (doseq [ddl gpkg-metadata-ddl]
+      (jdbc/execute! tx [ddl]))
+    (jdbc/execute!
+     tx
+     ["INSERT OR IGNORE INTO gpkg_spatial_ref_sys
+        (srs_name, srs_id, organization, organization_coordsys_id, definition, description)
+        VALUES (?,?,?,?,?,?)"
+      "Undefined cartesian SRS" (int -1) "NONE" (int -1) "undefined"
+      "undefined cartesian coordinate reference system"])
+    (jdbc/execute!
+     tx
+     ["INSERT OR IGNORE INTO gpkg_spatial_ref_sys
+        (srs_name, srs_id, organization, organization_coordsys_id, definition, description)
+        VALUES (?,?,?,?,?,?)"
+      "Undefined geographic SRS" (int 0) "NONE" (int 0) "undefined"
+      "undefined geographic coordinate reference system"])
+    (ensure-srs! tx 4326)))
+
+;; ---------------------------------------------------------------------------
+;; Metadata queries
+
 (defn table-names
   "Get the tables present in the geopackage or sqlite database, as a
    set of strings."
   [file & {:keys [spatial-only? include-system?]
            :or {spatial-only? false include-system? false}}]
-  (let [file (io/as-file file)]
-    (if spatial-only?
-      (let [geopackage (GeoPackage. file)
-            store (DataStoreFinder/getDataStore
-                   {"dbtype" "geopkg"
-                    "database" (.getCanonicalPath (io/as-file file))})]
-        (try
-          (set (.getTypeNames store))
-          (finally
-            (.dispose store)
-            (.close geopackage))))
-      (->> [(if include-system?
-              "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
-              "SELECT name FROM sqlite_master WHERE type IN ('table','view')
-                     AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'gpkg_%'
-                     AND name NOT LIKE 'rtree_%'")]
-           (sqlite-query! file)
-           (map :sqlite_master/name)
-           (set)))))
+  (if spatial-only?
+    (->> (sqlite-query!
+          file ["SELECT table_name FROM gpkg_contents WHERE data_type = 'features'"])
+         (map :gpkg_contents/table_name)
+         (set))
+    (->> [(if include-system?
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view')
+                   AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'gpkg_%'
+                   AND name NOT LIKE 'rtree_%'")]
+         (sqlite-query! file)
+         (map :sqlite_master/name)
+         (set))))
 
 (defn column-names [file table]
   (->> (sqlite-query!
@@ -180,7 +282,6 @@
   column; sometimes it is useful to know what the geometry column is
   called in a table (eg. for `amend` to update it)."
   [file table]
-
   (some-> (sqlite-query!
            file
            ["SELECT column_name \"column-name\", geometry_type_name \"geometry-type\", srs_id srid FROM gpkg_geometry_columns WHERE table_name = ?" table])
@@ -198,93 +299,60 @@
                      "MULTIPOLYGON" :multi-polygon
                      %))))
 
-(defn- ->crs [x]
-  (cond (string? x) (CRS/decode x true)
-        (integer? x) (CRS/decode (str "EPSG:" x) true)
+(defn- geometry-columns-map
+  "Map of table-name -> {:column geom-col-name :srid srs-id} for every
+   spatial table in `file`. Empty if the file has no
+   gpkg_geometry_columns table (i.e. plain sqlite)."
+  [file]
+  (try
+    (into {}
+          (for [r (sqlite-query!
+                   file ["SELECT table_name, column_name, srs_id FROM gpkg_geometry_columns"])]
+            [(:gpkg_geometry_columns/table_name r)
+             {:column (:gpkg_geometry_columns/column_name r)
+              :srid (:gpkg_geometry_columns/srs_id r)}]))
+    (catch Exception _ {})))
+
+(defn- primary-key-column
+  "Name of `table`'s primary-key column, or nil. For GeoPackage feature
+   tables this is the integer feature id (fid), which is reported
+   separately as a rowid rather than as an attribute."
+  [file table]
+  (->> (sqlite-query! file [(format "PRAGMA table_info(%s)" (escape-identifier table))])
+       (filter #(pos? (long (:pk %))))
+       (first)
+       (:name)))
+
+(defn- ->srid
+  "Coerce a CRS reference (an integer EPSG code, or a string like
+   \"EPSG:4326\") into an integer srid."
+  [x]
+  (cond (integer? x) x
+        (string? x) (Integer/parseInt (last (string/split x #":")))
         :else (throw (IllegalArgumentException. (str "Unknown type of CRS " x)))))
 
-(let [string-array-class (class (make-array String 0))]
-  (defn- gpkg-iterator
-    "Returns a Closable Iterator over a geotools FeatureIterator
-   for the features in the table.
+;; ---------------------------------------------------------------------------
+;; Reading
+
+(defn- table-iterator
+  "A Closeable Iterator over Features for `table` in `file`.
+
+   `geom-col`/`srid` describe the geometry column (nil for non-spatial
+   tables). Geometry blobs are decoded with a reader bound to `factory`,
+   and reprojected to `to-crs` if given.
 
    Internal implementation detail of gpkg/open."
-    [^JDBCFeatureStore source table-name crs ^MathTransform crs-transform key-transform fetch-rowid]
-    (let [features (-> source
-                       (.getFeatures)
-                       (.features))]
+  [file table geom-col srid key-transform fetch-rowid to-crs ^GeometryFactory factory]
+  (let [rdr       (geom/reader factory)
+        to-srid   (when to-crs (->srid to-crs))
+        transform (when (and to-srid srid) (crs/transform srid to-srid))
+        eff-srid  (or to-srid srid)
+        crs-str   (when eff-srid (str "EPSG:" eff-srid))
+        ;; on spatial tables the integer primary key is the feature id,
+        ;; which we expose as a rowid rather than as a column attribute
+        pk-col    (when geom-col (primary-key-column file table))
 
-      ;; This is a hack to work around a bug/limitation in geotools
-      ;; Geotools assumes that all geopackage fields with mime-type application/json
-      ;; contain json-encoded primitive arrays, rather than arbitrary blobs
-      ;; and therefore decodes them to arrays. I'm not sure whether a geopackage
-      ;; can be marked up as containing an int array, and what would happen
-      ;; in that case.
-      (doseq [att (.getAttributeDescriptors (.getSchema source))]
-        (when-let [data-column (some-> att
-                                       (.getUserData)
-                                       (.get "gpkg.dataColumn"))]
-          (when (= "application/json" (.getMimeType data-column))
-            ;; this is essentially to disable array decoding in GeoPkgDialect.convertValue() here
-            ;; https://github.com/geotools/geotools/blob/e24ceff09ce11f537a666bed2f6c039144177bb3/modules/plugin/geopkg/src/main/java/org/geotools/geopkg/GeoPkgDialect.java#L968
-            ;; via https://github.com/geotools/geotools/blob/e24ceff09ce11f537a666bed2f6c039144177bb3/modules/plugin/geopkg/src/main/java/org/geotools/geopkg/GeoPkgDialect.java#L746
-
-            ;; otherwise non-array json values will crash geotools on reading a feature.
-            ;; They come out as a String[] with 1 element. This cannot be patched around
-            ;; here because the binding is not mutable
-            (.setMimeType data-column ""))))
-      
-      (reify
-        java.util.Iterator
-        (next [_]
-          (when-let [feature ^SimpleFeatureImpl (when (.hasNext features) (.next features))]
-            (let [geometry-property-name (.getName
-                                          (.getDefaultGeometryProperty feature))]
-              (f/map->Feature
-               (persistent!
-                (reduce
-                 (fn [out ^SimpleFeatureImpl$Attribute property]
-                   (let [is-geometry (= (.getName property) geometry-property-name)]
-                     (if-let [col-key (if is-geometry
-                                        :geometry
-                                        (key-transform (.getLocalPart (.getName property))))]
-                       (assoc! out
-                               col-key
-                               (if (and is-geometry crs-transform)
-                                 (JTS/transform ^Geometry (.getValue property) crs-transform)
-                                 (let [value (.getValue property)]
-                                   ;; if the value is a string[] of length 1,
-                                   ;; unwrap it as it is actually a json value.
-                                   (if (and (instance? string-array-class value)
-                                            (= (count value) 1))
-                                     (aget value 0)
-                                     value))))
-                       ;; do nothing, skip key
-                       out)))
-
-                 (transient (cond-> {:table table-name :crs crs}
-                              fetch-rowid
-                              (assoc ::rowid (some-> feature (.getID) (string/split #"\.") (last) (parse-long)))))
-                 (.getProperties feature)))))))
-
-        (hasNext [_] (.hasNext features))
-
-        java.io.Closeable
-        (close [_] (.close features))))))
-
-(defn- sqlite-iterator
-  "Returns a Closable Iterator over a ResultSet containing all
-   the rows and columns in the table.
-
-   Internal implementation detail of gpkg/open."
-  [^java.io.File file ^String table key-transform fetch-rowid]
-  (let [ds   (jdbc/get-datasource
-              (format "jdbc:sqlite:file:%s?mode=ro&immutable=1"
-                      (.getCanonicalPath (io/as-file file))))
-
-        ;; unfortunately next.jdbc is not suitable
-        ;; for streaming results as a lazy seq
-        conn ^java.sql.Connection (jdbc/get-connection ds)
+        conn ^java.sql.Connection (jdbc/get-connection (read-datasource file))
         stmt ^java.sql.Statement  (.createStatement conn)
         rs   ^java.sql.ResultSet  (.executeQuery
                                    stmt
@@ -293,14 +361,22 @@
                                      (format "SELECT * FROM \"%s\"" table)))
         md   ^java.sql.ResultSetMetaData (.getMetaData rs)
         cols (vec (for [i (range (if fetch-rowid 2 1) (inc (.getColumnCount md)))
-                        :let [col-key (key-transform (.getColumnName md i))]
-                        :when col-key
+                        :let [col-name (.getColumnName md i)
+                              geometry? (and geom-col (= col-name geom-col))
+                              col-key (if geometry? :geometry (key-transform col-name))]
+                        :when (and col-key (not (and pk-col (= col-name pk-col))))
                         :let [col-type (.getColumnTypeName md i)]]
                     [i
                      col-key
-                     (case col-type
-                       "BOOLEAN" {0 false 1 true}
-                       identity)]))
+                     (cond
+                       geometry?
+                       (fn [v] (when v
+                                 (let [gm (geom/decode v rdr)]
+                                   (if transform
+                                     (crs/reproject gm transform to-srid)
+                                     gm))))
+                       (= "BOOLEAN" col-type) {0 false 1 true}
+                       :else identity)]))
         asked-has-next (atom false)
         has-next (atom false)]
     (reify
@@ -313,7 +389,7 @@
          (persistent!
           (reduce
            (fn [a [^int i n t]] (assoc! a n (t (.getObject rs i))))
-           (transient (cond-> {:table table}
+           (transient (cond-> {:table table :crs crs-str}
                         fetch-rowid (assoc ::rowid (.getObject rs 1))))
            cols))))
 
@@ -355,7 +431,7 @@
    Column names are processed through `key-transform`, so e.g. `keyword`
    will convert them to clojure keywords. If `key-transform` returns false/nil
    the column will be omitted from the feature, so you can use it to select
-   specific columns as well. For example 
+   specific columns as well. For example
 
    :key-transform (comp #{:a :b} keyword) will keep columns a and b
 
@@ -373,100 +449,88 @@
            :or {key-transform identity
                 geometry-factory g/*factory*}}]
   (assert (.exists (io/as-file gpkg)))
-  
-  (let [store ^JDBCDataStore (DataStoreFinder/getDataStore
-                              {"dbtype" "geopkg"
-                               "database" (.getCanonicalPath (io/as-file gpkg))
-                               "read-only" true})]
-    (try
-      (let [_ (try (.setGeometryFactory store geometry-factory) (catch Exception e (log/warn e)))
-            
-            tables (if table-name
-                     (let [known (table-names gpkg :include-system? true)]
-                       (when-not (known table-name)
-                         (throw (ex-info "Table not found in geopackage"
-                                         {::missing-table table-name
-                                          :file gpkg
-                                          :table table-name
-                                          :tables known})))
-                       [table-name])
-                     (into [] (table-names gpkg :spatial-only? spatial-only?)))
 
-            state (volatile! {:table nil
-                              :tables tables
-                              :iterator nil
-                              :closed false})
+  (let [geom-cols (geometry-columns-map gpkg)
 
-            maybe-advance!
-            (fn maybe-advance! [{:keys [^java.util.Iterator iterator tables] :as state}]
-              (when (:closed state) (throw (ex-info "Iterating on a geopackage that has been closed" {:input gpkg :state state})))
-              (if (and iterator (.hasNext iterator))
-                state ;; just continue with this iterator
+        tables (if table-name
+                 (let [known (table-names gpkg :include-system? true)]
+                   (when-not (known table-name)
+                     (throw (ex-info "Table not found in geopackage"
+                                     {::missing-table table-name
+                                      :file gpkg
+                                      :table table-name
+                                      :tables known})))
+                   [table-name])
+                 (into [] (table-names gpkg :spatial-only? spatial-only?)))
 
-                (if (seq tables) ;; there are more tables, start next table
-                  (let [[^String table & tables] tables
-                        source ^JDBCFeatureStore (try
-                                                   (.getFeatureSource store table)
-                                                   (catch Exception e
-                                                     (if (re-find #"Schema '.+' does not exist." (.getMessage e))
-                                                       nil
-                                                       (throw e))))]
-                    (when iterator (.close iterator))
-                    (let [next-state
-                          (if source
-                            ;; spatial table
-                            (let [crs (-> source .getInfo .getCRS (CRS/lookupIdentifier true))
-                                  crs-transform (when to-crs
-                                                  (let [from-crs (->crs crs)
-                                                        to-crs (->crs to-crs)]
-                                                    (CRS/findMathTransform from-crs to-crs true)))]
-                              (assoc state
-                                     :table table
-                                     :tables tables
-                                     :iterator (gpkg-iterator source table crs crs-transform key-transform rowids?)))
-                            ;; non-spatial table
-                            (assoc state
-                                   :table table
-                                   :tables tables
-                                   :iterator (sqlite-iterator gpkg table key-transform rowids?)))]
+        state (volatile! {:tables tables
+                          :iterator nil
+                          :closed false})
 
-                      ;; this is to deal with empty tables - the Iterator implementation that's returned
-                      ;; below mustn't (not (.hasNext)) until we have got to the end, so if we've made an
-                      ;; iterator for a table with nothing in we need to move onto the next table
-                      (if (and (:iterator next-state)
-                               (not (.hasNext (:iterator next-state))))
-                        (maybe-advance! next-state)
-                        next-state)))
+        maybe-advance!
+        (fn maybe-advance! [{:keys [^java.util.Iterator iterator tables] :as state}]
+          (when (:closed state)
+            (throw (ex-info "Iterating on a geopackage that has been closed"
+                            {:input gpkg :state state})))
+          (if (and iterator (.hasNext iterator))
+            state ;; just continue with this iterator
 
-                  ;; reached the end
-                  (do
-                    (when iterator (.close iterator))
-                    {:table nil :tables nil :iterator nil :closed false}))))
-            ]
+            (if (seq tables) ;; there are more tables, start next table
+              (let [[^String table & more-tables] tables
+                    {gcol :column gsrid :srid} (get geom-cols table)]
+                (when iterator (.close iterator))
+                (let [next-state
+                      (assoc state
+                             :tables more-tables
+                             :iterator (table-iterator gpkg table gcol gsrid
+                                                       key-transform rowids?
+                                                       to-crs geometry-factory))]
+                  ;; deal with empty tables: an iterator that has nothing in
+                  ;; it must be skipped so the outer iterator doesn't stop early
+                  (if (.hasNext (:iterator next-state))
+                    next-state
+                    (maybe-advance! next-state))))
 
-        (reify
-          java.lang.AutoCloseable
-          (close [_]
-            ;; close feature iterator
-            (try (vswap! state (fn [state]
-                                 (when-let [^java.io.Closeable i (:iterator state)] (.close i))
-                                 (assoc state :iterator nil :closed true)))
-                 (finally (.dispose store))))
+              ;; reached the end
+              (do
+                (when iterator (.close iterator))
+                {:tables nil :iterator nil :closed false}))))]
 
-          java.util.Iterator
-          (next [_]
-            (let [state (vswap! state maybe-advance!)]
-              (when-let [^java.util.Iterator iterator (:iterator state)]
-                (.next iterator))))
+    (reify
+      java.lang.AutoCloseable
+      (close [_]
+        (vswap! state (fn [state]
+                        (when-let [^java.io.Closeable i (:iterator state)] (.close i))
+                        (assoc state :iterator nil :closed true))))
 
-          (hasNext [_]
-            (let [state (vswap! state maybe-advance!)]
-              (if-let [^java.util.Iterator iterator (:iterator state)]
-                (.hasNext iterator)
-                false)))))
-      (catch Throwable e
-        (.dispose store)
-        (throw e)))))
+      java.util.Iterator
+      (next [_]
+        (let [state (vswap! state maybe-advance!)]
+          (when-let [^java.util.Iterator iterator (:iterator state)]
+            (.next iterator))))
+
+      (hasNext [_]
+        (let [state (vswap! state maybe-advance!)]
+          (if-let [^java.util.Iterator iterator (:iterator state)]
+            (.hasNext iterator)
+            false))))))
+
+;; ---------------------------------------------------------------------------
+;; Schema inference & DDL
+
+(def ^:private geometry-keys
+  #{:geometry :geometry-collection :line-string :multi-line-string
+    :multi-point :multi-polygon :point :polygon})
+
+(def ^:private geometry-type-names
+  {:geometry "GEOMETRY"
+   :geometry-collection "GEOMETRYCOLLECTION"
+   :point "POINT"
+   :line-string "LINESTRING"
+   :polygon "POLYGON"
+   :multi-point "MULTIPOINT"
+   :multi-line-string "MULTILINESTRING"
+   :multi-polygon "MULTIPOLYGON"})
 
 (defn- kv-type [k v]
   [(name k)
@@ -474,7 +538,7 @@
        {:accessor (if (keyword? k) k #(get % k))
         :type
         (if (instance? Geometry v)
-          Geometries/GEOMETRY
+          :geometry
           (case (.getCanonicalName (class v))
             ("java.lang.String"
              "java.lang.Float"
@@ -502,13 +566,12 @@
 
   This function should probably only be used interactively or for hacking around,
   as it is not very safe if you might have nil values (which have no type)"
-
   [feature]
   (cond (instance? geometry.feature.Feature feature)
         (let [keys (keys feature)]
           (concat
            [["geometry"
-             {:type Geometries/GEOMETRY
+             {:type :geometry
               :srid  (g/srid feature)
               :accessor g/geometry}]]
            (for [k (sort-by str keys)
@@ -519,7 +582,7 @@
 
         (satisfies? g/HasGeometry feature)
         [["geometry"
-          {:type Geometries/GEOMETRY
+          {:type :geometry
            :accessor g/geometry
            :srid (g/srid feature)}]]
 
@@ -533,114 +596,8 @@
   "Get the spec for the (first) geometry field from a schema."
   [spec]
   (first (filter
-          (fn [[_ {:keys [type]}]]
-            (or
-             (= Geometries/GEOMETRY type)
-             (= Geometries/GEOMETRYCOLLECTION type)
-             (= Geometries/LINESTRING type)
-             (= Geometries/MULTILINESTRING type)
-             (= Geometries/MULTIPOINT type)
-             (= Geometries/MULTIPOLYGON type)
-             (= Geometries/POINT type)
-             (= Geometries/POLYGON type)
-
-             (= :geometry type)
-             (= :geometry-collection type)
-             (= :line-string type)
-             (= :multi-line-string type)
-             (= :multi-point type)
-             (= :multi-polygon type)
-             (= :point type)
-             (= :polygon type)))
+          (fn [[_ {:keys [type]}]] (contains? geometry-keys type))
           spec)))
-
-(defn- ->geotools-type
-  "Convert a type specification from a schema into something that geotools can understand
-   as a column type."
-  [type]
-  (cond
-    (class? type)  (.getCanonicalName ^Class type)
-    (string? type) type
-
-    (= :geometry type) Geometries/GEOMETRY
-    (= :geometry-collection type) Geometries/GEOMETRYCOLLECTION
-    (= :line-string type) Geometries/LINESTRING
-    (= :multi-line-string type) Geometries/MULTILINESTRING
-    (= :multi-point type) Geometries/MULTIPOINT
-    (= :multi-polygon type) Geometries/MULTIPOLYGON
-    (= :point type) Geometries/POINT
-    (= :polygon type) Geometries/POLYGON
-
-    (= :integer type) (.getCanonicalName Integer)
-    (= :int type) (.getCanonicalName Integer)
-    (= :long type) (.getCanonicalName Long)
-    (= :short type) (.getCanonicalName Short)
-    (= :float type) (.getCanonicalName Float)
-    (= :double type) (.getCanonicalName Double)
-    (= :real type) (.getCanonicalName Double)
-    (= :string type) (.getCanonicalName String)
-    (= :boolean type) (.getCanonicalName Boolean)
-
-    (keyword? type) (.getCanonicalName String)
-
-    :else type))
-
-(defn- ->feature-entry
-  "Create a geotools FeatureEntry (for our purposes a gpkg table definition)"
-  [table-name spec]
-  (let [geom-col (spec-geom-field spec)]
-    (doto (FeatureEntry.)
-      (.setTableName table-name)
-      (.setGeometryColumn (name (first geom-col)))
-      (.setGeometryType (->geotools-type (:type (second geom-col)))))))
-
-(defn- ->geotools-schema
-  "Create a geotools schema that defines the columns of a gpkg table."
-  [table-name spec]
-  (DataUtilities/createType
-   table-name
-   (string/join ","
-                (for [[name {:keys [type srid]}] spec]
-                  (let [type (->geotools-type type)]
-                    (str (clojure.core/name name) ":" type (when srid (str ":srid=" srid))))))))
-
-(defn- set-layer-extent!
-  "Update the extent (if not nil) for `table-name` in the geopackage at `file`
-
-  return `file` in case you want to thread"
-  [file table-name  ^ReferencedEnvelope layer-extent]
-  (when layer-extent
-    (sqlite-query!
-     file
-     ["UPDATE gpkg_contents SET min_x = ?, min_y = ?, max_x = ?, max_y = ? WHERE table_name = ?;"
-      (.getMinX layer-extent)
-      (.getMinY layer-extent)
-      (.getMaxX layer-extent)
-      (.getMaxY layer-extent)
-      table-name]))
-  file)
-
-(defn drop-table
-  "Attempt to drop `table` within geopackage `file`
-  This uses the geotools method first, to ensure spatial table cleanup.
-  If that fails it uses DROP TABLE and deletes anything from gpkg_contents for good measure."
-  [file table-name]
-  (try (with-open [ds (DataStoreFinder/getDataStore
-                       {"dbtype" "geopkg"
-                        "database" (.getCanonicalPath (io/as-file file))})]
-         (try
-           (.removeSchema ds table-name)
-           (finally (.dispose ds))))
-       (catch Exception _
-         ;; this is only safe on a non-spatial table
-         (with-open [conn (open-sqlite file)]
-           (jdbc/with-transaction [tx conn]
-             (jdbc/execute!
-              tx
-              [(format "DELETE FROM gpkg_contents WHERE table_name = ?" table-name)])
-             (jdbc/execute!
-              tx
-              [(format "DROP TABLE IF EXISTS %s" (escape-identifier table-name))]))))))
 
 (let [integral #{:int :integer :short :long Integer Short Long
                  (.getCanonicalName Integer)
@@ -651,24 +608,7 @@
              (.getCanonicalName Double)
              (.getCanonicalName Float)}
 
-      bool #{:boolean Boolean (.getCanonicalName Boolean)}
-      geom-key #{:line-string
-                 :geometry
-                 :geometry-collection
-                 :multi-line-string
-                 :multi-point
-                 :multi-polygon
-                 :point
-                 :polygon}
-
-      geom-class #{Geometries/GEOMETRY
-                   Geometries/GEOMETRYCOLLECTION
-                   Geometries/LINESTRING
-                   Geometries/MULTILINESTRING
-                   Geometries/MULTIPOINT
-                   Geometries/MULTIPOLYGON
-                   Geometries/POINT
-                   Geometries/POLYGON}]
+      bool #{:boolean Boolean (.getCanonicalName Boolean)}]
   (defn- create-table-ddl
     "Converts the `spec` for a table into a map containing
 
@@ -685,20 +625,16 @@
                       on-update (:on-update foreign-key)
                       foreign-key (if (map? foreign-key)
                                     (:column foreign-key)
-                                    foreign-key)
-                      ]]
+                                    foreign-key)]]
             (-> (escape-identifier col)
                 (str " ")
                 (str (cond (integral col-type) "INTEGER"
                            (real col-type) "REAL"
                            (bool col-type) "BOOLEAN"
-                           (geom-key col-type) (-> col-type
-                                                   (name)
-                                                   (string/replace #"-" "")
-                                                   (string/upper-case))
-                           (geom-class col-type) (-> col-type
-                                                     (.getName)
-                                                     (string/upper-case))
+                           (geometry-keys col-type) (-> col-type
+                                                        (name)
+                                                        (string/replace #"-" "")
+                                                        (string/upper-case))
                            :else "TEXT"))
                 (cond-> not-null (str " NOT NULL")
                         primary-key (str " PRIMARY KEY")
@@ -720,17 +656,173 @@
 
       {:create-table
        (format "CREATE TABLE IF NOT EXISTS %s (%s);" (escape-identifier table-name) (string/join ", " col-types))
-       
+
        :insert
        (format "INSERT INTO %s (%s) values (%s)"
                (escape-identifier table-name)
                (string/join ", " (map escape-identifier cols))
                (string/join ", " (repeat (count cols) "?")))
-       
+
        :has-integer-primary-key
        (some (fn [{:keys [primary-key type]}]
                (and (integral type) (boolean primary-key)))
-             (map second spec))} )))
+             (map second spec))})))
+
+;; ---------------------------------------------------------------------------
+;; Spatial table registration & index
+
+(defn- register-feature-table!
+  "Register `table` as a features table in gpkg_contents and
+   gpkg_geometry_columns."
+  [tx table geom-col geom-type srid]
+  (jdbc/execute!
+   tx
+   ["INSERT OR IGNORE INTO gpkg_contents
+      (table_name, data_type, identifier, srs_id, min_x, min_y, max_x, max_y)
+      VALUES (?,?,?,?,?,?,?,?)"
+    table "features" table (int srid) 0.0 0.0 0.0 0.0])
+  (jdbc/execute!
+   tx
+   ["INSERT OR IGNORE INTO gpkg_geometry_columns
+      (table_name, column_name, geometry_type_name, srs_id, z, m)
+      VALUES (?,?,?,?,0,0)"
+    table geom-col geom-type (int srid)]))
+
+(defn- rtree-trigger-sqls
+  "The six rtree-maintenance triggers from the GeoPackage spec, for
+   `table`.`geom-col` indexed by virtual table `rtree`, keyed on the
+   integer primary key `pk`."
+  [table geom-col rtree pk]
+  (let [t (escape-identifier table)
+        g (escape-identifier geom-col)
+        r (escape-identifier rtree)
+        k (escape-identifier pk)
+        tn (fn [suf] (escape-identifier (str rtree suf)))
+        ins-vals (format "NEW.%s, ST_MinX(NEW.%s), ST_MaxX(NEW.%s), ST_MinY(NEW.%s), ST_MaxY(NEW.%s)"
+                         k g g g g)]
+    [(format "CREATE TRIGGER IF NOT EXISTS %s AFTER INSERT ON %s WHEN (NEW.%s NOT NULL AND NOT ST_IsEmpty(NEW.%s)) BEGIN INSERT OR REPLACE INTO %s VALUES (%s); END"
+             (tn "_insert") t g g r ins-vals)
+     (format "CREATE TRIGGER IF NOT EXISTS %s AFTER UPDATE OF %s ON %s WHEN OLD.%s = NEW.%s AND (NEW.%s NOTNULL AND NOT ST_IsEmpty(NEW.%s)) BEGIN INSERT OR REPLACE INTO %s VALUES (%s); END"
+             (tn "_update1") g t k k g g r ins-vals)
+     (format "CREATE TRIGGER IF NOT EXISTS %s AFTER UPDATE OF %s ON %s WHEN OLD.%s = NEW.%s AND (NEW.%s ISNULL OR ST_IsEmpty(NEW.%s)) BEGIN DELETE FROM %s WHERE id = OLD.%s; END"
+             (tn "_update2") g t k k g g r k)
+     (format "CREATE TRIGGER IF NOT EXISTS %s AFTER UPDATE ON %s WHEN OLD.%s != NEW.%s AND (NEW.%s NOTNULL AND NOT ST_IsEmpty(NEW.%s)) BEGIN DELETE FROM %s WHERE id = OLD.%s; INSERT OR REPLACE INTO %s VALUES (%s); END"
+             (tn "_update3") t k k g g r k r ins-vals)
+     (format "CREATE TRIGGER IF NOT EXISTS %s AFTER UPDATE ON %s WHEN OLD.%s != NEW.%s AND (NEW.%s ISNULL OR ST_IsEmpty(NEW.%s)) BEGIN DELETE FROM %s WHERE id IN (OLD.%s, NEW.%s); END"
+             (tn "_update4") t k k g g r k k)
+     (format "CREATE TRIGGER IF NOT EXISTS %s AFTER DELETE ON %s WHEN OLD.%s NOT NULL BEGIN DELETE FROM %s WHERE id = OLD.%s; END"
+             (tn "_delete") t g r k)]))
+
+(defn- create-spatial-index!
+  "Create an rtree spatial index on `table`.`geom-col`, keyed on `pk`,
+   and register it in gpkg_extensions, with the spec triggers that keep
+   it up to date."
+  [tx table geom-col pk]
+  (let [rtree (str "rtree_" table "_" geom-col)]
+    (jdbc/execute!
+     tx [(format "CREATE VIRTUAL TABLE IF NOT EXISTS %s USING rtree(\"id\", \"minx\", \"maxx\", \"miny\", \"maxy\")"
+                 (escape-identifier rtree))])
+    (jdbc/execute!
+     tx ["INSERT OR IGNORE INTO gpkg_extensions
+           (table_name, column_name, extension_name, definition, scope)
+           VALUES (?,?,?,?,?)"
+         table geom-col "gpkg_rtree_index"
+         "http://www.geopackage.org/spec120/#extension_rtree" "write-only"])
+    (doseq [s (rtree-trigger-sqls table geom-col rtree pk)]
+      (jdbc/execute! tx [s]))))
+
+(defn- set-layer-extent!
+  "Update the extent (if not nil) for `table` in gpkg_contents on `tx`."
+  [tx table ^Envelope extent]
+  (when (and extent (not (.isNull extent)))
+    (jdbc/execute!
+     tx
+     ["UPDATE gpkg_contents SET min_x = ?, min_y = ?, max_x = ?, max_y = ? WHERE table_name = ?"
+      (.getMinX extent) (.getMinY extent) (.getMaxX extent) (.getMaxY extent) table])))
+
+(defn drop-table
+  "Drop `table` within geopackage `file`, cleaning up its GeoPackage
+   metadata (gpkg_contents / gpkg_geometry_columns / gpkg_extensions)
+   and any rtree spatial index and triggers."
+  [file table-name]
+  (with-open [conn (open-sqlite file)]
+    (jdbc/with-transaction [tx conn]
+      (doseq [{c :gpkg_geometry_columns/column_name}
+              (try (jdbc/execute!
+                    tx ["SELECT column_name FROM gpkg_geometry_columns WHERE table_name = ?" table-name])
+                   (catch Exception _ nil))]
+        (let [rtree (str "rtree_" table-name "_" c)]
+          (doseq [suf ["_insert" "_update1" "_update2" "_update3" "_update4" "_delete"]]
+            (jdbc/execute! tx [(format "DROP TRIGGER IF EXISTS %s" (escape-identifier (str rtree suf)))]))
+          (jdbc/execute! tx [(format "DROP TABLE IF EXISTS %s" (escape-identifier rtree))])))
+      (doseq [meta-table ["gpkg_geometry_columns" "gpkg_extensions" "gpkg_contents"]]
+        (try (jdbc/execute!
+              tx [(format "DELETE FROM %s WHERE table_name = ?" meta-table) table-name])
+             (catch Exception _)))
+      (jdbc/execute! tx [(format "DROP TABLE IF EXISTS %s" (escape-identifier table-name))]))))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+
+(defn- expand-extent
+  "Grow `extent` (an Envelope, or nil) to include `geom`'s envelope."
+  ^Envelope [^Envelope extent ^Geometry geom]
+  (if (nil? geom)
+    extent
+    (let [e (.getEnvelopeInternal geom)]
+      (cond
+        (.isNull e) extent
+        (nil? extent) (Envelope. e)
+        :else (doto extent (.expandToInclude e))))))
+
+(defn- insert-features!
+  "Insert `features` into `table` on `conn` using `insert-sql` (whose
+   columns match `spec`, in order). Encodes geometry columns to
+   GeoPackage blobs (with `srid`), maps booleans to 0/1, and returns the
+   accumulated Envelope of all geometries.
+
+   Pulls features one at a time off an Iterator (rather than holding the
+   seq head) so that a lazily-generated input seq can be GC'd as we go."
+  ^Envelope [^java.sql.Connection conn insert-sql spec features srid batch-insert-size]
+  (let [getters (mapv (fn [[k v]] (or (:accessor v) #(get % k))) spec)
+        kinds   (mapv (fn [[_ {:keys [type]}]]
+                        (cond (geometry-keys type) :geom
+                              (or (= :boolean type) (= Boolean type)
+                                  (= "java.lang.Boolean" type)) :bool
+                              :else :other))
+                      spec)
+        geom-idx (first (keep-indexed (fn [i k] (when (= :geom k) i)) kinds))
+        n-cols (count spec)
+        iter ^java.util.Iterator (.iterator ^Iterable (or features []))]
+    (.setAutoCommit conn false)
+    (let [extent
+          (with-open [ps (.prepareStatement conn insert-sql)]
+            (loop [extent nil
+                   pending 0]
+              (if (.hasNext iter)
+                (let [feature (.next iter)
+                      vals (object-array n-cols)]
+                  (dotimes [i n-cols]
+                    (aset vals i ((getters i) feature)))
+                  (dotimes [i n-cols]
+                    (let [v (aget vals i)
+                          col (inc i)]
+                      (cond
+                        (nil? v) (.setObject ps col nil)
+                        (= :geom (kinds i)) (.setBytes ps col (geom/encode v srid))
+                        (= :bool (kinds i)) (.setInt ps col (if v 1 0))
+                        :else (.setObject ps col v))))
+                  (.addBatch ps)
+                  (let [extent (expand-extent extent (when geom-idx (aget vals geom-idx)))
+                        pending (inc pending)]
+                    (if (>= pending batch-insert-size)
+                      (do (.executeBatch ps) (recur extent 0))
+                      (recur extent pending))))
+                (do (when (pos? pending) (.executeBatch ps))
+                    extent))))]
+      (.commit conn)
+      (.setAutoCommit conn true)
+      extent)))
 
 (defn write
   "Write the given sequence of `features` into a geopackage at `file`
@@ -753,18 +845,18 @@
    :srid        1234
    :not-null    true|false
    :primary-key true | :auto-increment
-   :foreign-key :table/column | {:column :table/column 
+   :foreign-key :table/column | {:column :table/column
                                  :on-delete :set-null
                                  :on-update :cascade}
    }
-  
+
   only :type is required, and :srid if :type is a geometry
   column types are things like :point, :multi-polygon, :integer etc.
 
   if :accessor is not provided, the column name is used to get values
   from each row for this column. Otherwise accessor is invoked on each
   row.
-  
+
   Because of how sqlite works, these are only guaranteed to take effect
   if the target table doesn't exist
 
@@ -790,7 +882,7 @@
    (cond
      (= :drop-table if-exists)
      (drop-table file table-name)
-     
+
      (= :delete-rows if-exists)
      (with-open [conn (open-sqlite file)]
        (try
@@ -799,131 +891,53 @@
             tx
             [(format "DELETE FROM %s" (escape-identifier table-name))]))
          (catch Exception _))))
-   
-   (with-open [geopackage (open-for-writing file batch-insert-size)]
-     (let [spec (vec (or schema (infer-spec (first features))))
-           [geom-field {:keys [srid]
-                        geom-accessor :accessor
-                        :or   {srid 27700}}] (spec-geom-field spec)
-           crs (CRS/decode (str "EPSG:" srid))
 
-           ddl (create-table-ddl
-                table-name
-                (cond-> spec
-                  geom-field
-                  (conj [:fid
-                         {:type :integer
-                          :primary-key :auto-increment
-                          :not-null true}
-                         ])))]
+   (let [spec (vec (or schema (infer-spec (first features))))
+         [geom-field {:keys [srid type] :or {srid 27700}}] (spec-geom-field spec)
+         geom-col (when geom-field (name geom-field))
+         geom-type (when geom-field (geometry-type-names type "GEOMETRY"))
+         ddl (create-table-ddl
+              table-name
+              (cond-> spec
+                geom-field
+                (conj [:fid {:type :integer
+                             :primary-key :auto-increment
+                             :not-null true}])))]
+     (with-open [conn (open-sqlite file)]
+       (bootstrap-gpkg! conn)
        (if geom-field
          ;; spatial data:
-         (let [emit-feature (let [getters
-                                  (vec (for [[k v] spec]
-                                         (or (:accessor v)
-                                             #(get % k))))]
-                              (fn [feature]
-                                (mapv #(% feature) getters)))
-               feature-entry ^FeatureEntry (->feature-entry table-name spec)
-               ]
-           (.setBounds feature-entry (ReferencedEnvelope. 0 0 0 0 crs))
-           (try
-             ;; instead of using GeoPackage.create we are invoking our own DDL
-             ;; this lets us state foreign keys and not-null constraints, which
-             ;; geotools does not understand.
-             (with-open [conn (geopackage-connection geopackage)]
-               (jdbc/with-transaction [tx conn] (jdbc/execute! tx [(:create-table ddl)]))
-               (let [dialect ^org.geotools.geopkg.GeoPkgDialect
-                     (.getSQLDialect (geopackage-datastore geopackage))]
-                 ;; we have to invoke this to ensure all the
-                 ;; geopackage housekeeping is done.
-                 (.postCreateTable dialect
-                                   table-name
-                                   (->geotools-schema table-name spec)
-                                   conn)))
-             (catch java.lang.IllegalArgumentException _)
-             (catch java.sql.SQLException e
-               ;; We expect this exception if the table already exists, it's fine
-               ;; and we just assume things are OK. Things will break later if the
-               ;; existing table has the wrong shape
-               (when-not (.contains (.getMessage e) "[SQLITE_CONSTRAINT_UNIQUE]")
-                 (throw e))))
+         (let [insert-sql (format "INSERT INTO %s (%s) VALUES (%s)"
+                                  (escape-identifier table-name)
+                                  (string/join ", " (map (comp escape-identifier name first) spec))
+                                  (string/join ", " (repeat (count spec) "?")))]
+           (jdbc/with-transaction [tx conn]
+             (ensure-srs! tx srid)
+             (jdbc/execute! tx [(:create-table ddl)])
+             (register-feature-table! tx table-name geom-col geom-type srid)
+             (when add-spatial-index
+               (create-spatial-index! tx table-name geom-col "fid")))
 
-           (when add-spatial-index
-             (try (.createSpatialIndex geopackage feature-entry)
-                  (catch java.io.IOException e
-                    (log/warnf e "Unable to create spatial index in %s on %s" file table-name))))
-           
-           ;; It may seem odd that we are getting an iterator out here
-           ;; rather than just doing doseq [feature features], but for
-           ;; reasons Neil & Tom were unable to discern that prevents
-           ;; garbage collection of features (even though it looks
-           ;; eligible for locals clearing).
-           (let [features (or features [])
-                 iter ^java.util.Iterator (.iterator ^java.lang.Iterable features)
-
-                 ;; It is important that there are two with-opens here.
-                 ;; because the ordering of events has to be
-                 ;; (.close writer)
-                 ;; (.commit tx)
-                 ;; (.close tx)
-
-                 ^ReferencedEnvelope layer-extent
-                 (with-open [tx (DefaultTransaction.)]
-                   (let [extent
-                         (with-open [writer (.writer geopackage feature-entry true nil tx)]
-                           (loop [^ReferencedEnvelope extent nil]
-                             (if (.hasNext iter)
-                               (let [feature (.next iter)
-                                     ]
-                                 (.setAttributes
-                                  ^JDBCFeatureReader$ResultSetFeature (.next writer)
-                                  ^java.util.List (emit-feature feature))
-                                 (.write writer)
-                                 (recur
-                                  (let [^Geometry geom (if geom-accessor
-                                                         (geom-accessor feature)
-                                                         (get feature geom-field))
-                                        ^Envelope feature-env
-                                        (cond
-                                          (nil? geom) nil
-                                          (g/point? geom) (Envelope. (.getCoordinate geom))
-                                          :else (Envelope. (.getEnvelopeInternal geom)))]
-                                    (cond
-                                      (nil? feature-env) extent
-
-                                      (nil? extent) (ReferencedEnvelope. feature-env crs)
-
-                                      :else (doto extent (.expandToInclude feature-env))))
-                                  
-                                  ))
-                               extent ;; return extent
-                               )))]
-                     (.commit tx)
-                     extent ;; and return extent
-                     ))]
-
-             ;; Update the layer extent manually
-             (set-layer-extent! file table-name layer-extent)))
+           (let [extent (insert-features! conn insert-sql spec features srid batch-insert-size)]
+             (jdbc/with-transaction [tx conn]
+               (set-layer-extent! tx table-name extent))))
 
          ;; non-spatial data:
-         (with-open [conn (open-sqlite geopackage)]
-           (jdbc/with-transaction [tx conn]
-             (jdbc/execute! tx [(:create-table ddl)])
-             (when (:has-integer-primary-key ddl)
-               (jdbc/execute!
-                tx
-                ["INSERT INTO gpkg_contents (table_name, data_type, identifier) VALUES (?,?,?) ON CONFLICT DO NOTHING"
-                 table-name "attributes" table-name]))
-             (jdbc/execute-batch!
+         (jdbc/with-transaction [tx conn]
+           (jdbc/execute! tx [(:create-table ddl)])
+           (when (:has-integer-primary-key ddl)
+             (jdbc/execute!
               tx
-              (:insert ddl)
-              (for [feature features]
-                (for [[col {accessor :accessor}] spec]
-                  (if (nil? accessor)
-                    (get feature col)
-                    (accessor feature))))
-              {:batch-size batch-insert-size}))))
+              ["INSERT INTO gpkg_contents (table_name, data_type, identifier) VALUES (?,?,?) ON CONFLICT DO NOTHING"
+               table-name "attributes" table-name]))
+           (jdbc/execute-batch!
+            tx
+            (:insert ddl)
+            (for [feature features]
+              (for [[col {accessor :accessor}] spec]
+                (let [v (if (nil? accessor) (get feature col) (accessor feature))]
+                  (if (instance? Boolean v) (if v 1 0) v))))
+            {:batch-size batch-insert-size})))
        nil))))
 
 (defn amend
@@ -944,15 +958,13 @@
   `if-exists` can be `:preserve`, `:set-null` or `:drop-column`.
 
   `:drop-column` is safest, since you don't need to be sure the types
-  align. However, older sqlite drivers do not support DROP COLUMN in
-  ALTER TABLE, and the verison of geotools we're using currently
-  depends on an old sqlite. So we either need to risk using variant
-  versions of sqlite, or update geotools.
-  
+  align. It requires a sqlite driver new enough to support DROP COLUMN
+  in ALTER TABLE.
+
   `method` can be `:update-set`, `:left-join`, `:outer-join`
 
   - `:update-set` works as UPDATE table SET cols = vals WHERE table-rowid = input.rowid
-    
+
     unmatched rows are affected according to `if-exists`
     the inputs must be distinct on ::rowid
   - `:left-join` works as CREATE table AS (SELECT cols FROM old_table LEFT JOIN input)
@@ -983,17 +995,16 @@
            primary-key ["rowid" ::rowid]}}]
 
   {:pre [(#{:update-set :left-join :right-join :outer-join} method)]}
-  
+
   (let [[pk-col pk-accessor] primary-key
-        
+
         escape-identifier (memoize escape-identifier)
         schema (or schema (infer-spec (first values)))
         temp-table "__temp__"
         rowid-col "_original_rowid"
 
         temp-orig-rowid (escape-identifier temp-table rowid-col)
-        table-rowid     (escape-identifier table pk-col)
-        ]
+        table-rowid     (escape-identifier table pk-col)]
     (try
       ;; first write the new columns into our temporary table
       (write
@@ -1008,7 +1019,7 @@
            tx [(format "CREATE INDEX __temp__rowid__idx ON %s (%s)"
                        (escape-identifier temp-table)
                        (escape-identifier rowid-col))])
-          
+
           ;; ensure target columns exist; first we need to find out
           ;; what columns there are, then to drop or null them out
           ;; (maybe), then to create what is missing
@@ -1017,7 +1028,7 @@
                               (remove (comp #{rowid-col "rowid" "fid"} :name)))
 
                 src-names (set (map :name src-cols))
-                
+
                 tgt-names (->> (jdbc/execute!
                                 tx [(format "PRAGMA table_info(%s)" (escape-identifier table))])
                                (map :name)
@@ -1033,7 +1044,7 @@
                     (jdbc/execute!
                      tx
                      [(format "ALTER TABLE %s DROP COLUMN %s" (escape-identifier table) (escape-identifier col))]))
-                  
+
                   (and (seq existing) (= :set-null if-exists))
                   (jdbc/execute!
                    tx
@@ -1063,9 +1074,9 @@
                                 (escape-identifier temp-table) ;; update %s set
                                 (escape-identifier rowid-col) ;; %s jid
                                 (escape-identifier temp-table) ;; from %s
-                                
+
                                 temp-orig-rowid ;; group by %s
-                                temp-orig-rowid)]) ;; where %s = 
+                                temp-orig-rowid)]) ;; where %s =
                       (first)
                       (:next.jdbc/update-count))]
               (when (and (pos? non-singular-count)
@@ -1098,7 +1109,7 @@
                            (escape-identifier temp-table)
                            temp-orig-rowid
                            table-rowid)]))
-            
+
             (when (or (= method :left-join) (= method :outer-join) (= method :right-join))
               ;; left join and outer join both need the multiplied up rows inserting
               (let [set-cols ;; all the cols we are setting
@@ -1126,7 +1137,7 @@
                    (escape-identifier table)
                    (string/join "," (map first col-exprs))
                    (string/join ", " (map second col-exprs))
-                   
+
                    (escape-identifier table)
                    (escape-identifier temp-table)
                    table-rowid
@@ -1153,8 +1164,6 @@
                            (escape-identifier table)
                            table-rowid
                            temp-orig-rowid
-                           (escape-identifier temp-table))])
-              ))))
+                           (escape-identifier temp-table))])))))
       (finally
         (drop-table gpkg temp-table)))))
-

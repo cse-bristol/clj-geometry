@@ -4,8 +4,7 @@
             [clojure.java.io :as io]
             [geometry.core :as g]
             [geometry.feature :as f])
-  (:import [org.geotools.geometry.jts Geometries]
-           [clojure.lang IReduceInit]))
+  (:import [clojure.lang IReduceInit]))
 
 (defmacro with-temp-file [file & body]
   `(let [~file (.toFile (java.nio.file.Files/createTempFile
@@ -45,6 +44,31 @@
                  ;; we map into {} to strip off the feature type
                  ;; since we want to do a simple comparison here
                  (set (map #(into {} %) (sut/features in)))))))))
+
+(t/deftest test-to-crs-reprojection
+  (with-temp-file f
+    ;; an Ordnance Survey test point in British National Grid (EPSG:27700)
+    (sut/write
+     f "test-table"
+     [{"geometry" (g/make-point 651409.903 313177.270) "id" 1}]
+     :schema
+     {"geometry" {:type :point :srid 27700}
+      "id" {:type :integer}})
+
+    (t/testing "reading with :to-crs reprojects geometries to WGS84"
+      (with-open [in (sut/open f :table-name "test-table" :to-crs 4326)]
+        (let [pt (:geometry (first (sut/features in)))]
+          ;; expected WGS84 ~ (1.7179, 52.6576); proj4j uses a Helmert
+          ;; transform so allow a loose tolerance
+          (t/is (< (Math/abs (- 1.7179 (.getX pt))) 0.01))
+          (t/is (< (Math/abs (- 52.6576 (.getY pt))) 0.01))
+          (t/is (= 4326 (.getSRID pt))))))
+
+    (t/testing "without :to-crs the geometry is unchanged"
+      (with-open [in (sut/open f :table-name "test-table")]
+        (let [pt (:geometry (first (sut/features in)))]
+          (t/is (= 651409.903 (.getX pt)))
+          (t/is (= 27700 (.getSRID pt))))))))
 
 (t/deftest double-write-test
   (with-temp-file f
