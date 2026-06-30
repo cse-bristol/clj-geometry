@@ -60,10 +60,10 @@
     (t/testing "reading with :to-crs reprojects geometries to WGS84"
       (with-open [in (sut/open f :table-name "test-table" :to-crs 4326)]
         (let [pt (:geometry (first (sut/features in)))]
-          ;; expected WGS84 ~ (1.7179, 52.6576); proj4j uses a Helmert
-          ;; transform so allow a loose tolerance
-          (t/is (< (Math/abs (- 1.7179 (.getX pt))) 0.01))
-          (t/is (< (Math/abs (- 52.6576 (.getY pt))) 0.01))
+          ;; EPSG axis order: x=latitude ~52.6576, y=longitude ~1.7179
+          ;; proj4j uses a Helmert transform so allow a loose tolerance
+          (t/is (< (Math/abs (- 52.6576 (.getX pt))) 0.01))
+          (t/is (< (Math/abs (- 1.7179 (.getY pt))) 0.01))
           (t/is (= 4326 (.getSRID pt))))))
 
     (t/testing "without :to-crs the geometry is unchanged"
@@ -651,7 +651,7 @@
       (with-open [conn (#'sut/open-sqlite f)]
         (jdbc/execute! conn
                        ["UPDATE \"test-table\" SET geometry = ? WHERE id = 1"
-                        (#'geometry.gpkg.geom/encode (g/make-point 100 200) 27700)]))
+                        (#'geometry.gpkg.encode/encode (g/make-point 100 200) 27700)]))
       (t/is (= #{[1 100.0 100.0 200.0 200.0]
                  [2 30.0 30.0 40.0 40.0]}
                (set (map (juxt :rtree_test-table_geometry/id

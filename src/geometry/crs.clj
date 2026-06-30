@@ -4,7 +4,8 @@
   (:import [org.locationtech.proj4j
             CRSFactory CoordinateReferenceSystem
             CoordinateTransformFactory CoordinateTransform ProjCoordinate]
-           [org.locationtech.jts.geom Geometry Coordinate CoordinateFilter]))
+           [org.locationtech.jts.geom Geometry Coordinate CoordinateFilter]
+           [org.locationtech.proj4j.proj LongLatProjection]))
 
 (def ^:private ^CRSFactory crs-factory (CRSFactory.))
 (def ^:private ^CoordinateTransformFactory transform-factory (CoordinateTransformFactory.))
@@ -44,23 +45,41 @@
     (when-not to (throw (ex-info "Unknown target CRS" {:srid to-srid})))
     (.createTransform transform-factory from to)))
 
+(defn- geographic?
+  "True if `crs` is an unprojected geographic CRS whose EPSG axis order
+   is (latitude, longitude) — i.e. x and y must be swapped relative to
+   proj4j's internal (longitude, latitude) convention."
+  [^CoordinateReferenceSystem crs]
+  (instance? LongLatProjection (.getProjection crs)))
+
 (defn reproject
   "Return a copy of JTS `geom` with every coordinate transformed by
    `^CoordinateTransform t`. Mutates a clone, leaving `geom` untouched.
-   Sets the result SRID to `to-srid`."
+   Sets the result SRID to `to-srid`.
+
+   Coordinates follow the EPSG axis order: for geographic CRS (e.g. 4326)
+   x=latitude, y=longitude, matching the convention used by GeoTools."
   ^Geometry [^Geometry geom ^CoordinateTransform t to-srid]
-  (let [out (.copy geom)
-        src (ProjCoordinate.)
-        dst (ProjCoordinate.)]
+  (let [out      (.copy geom)
+        src      (ProjCoordinate.)
+        dst      (ProjCoordinate.)
+        swap-src (geographic? (.getSourceCRS t))
+        swap-dst (geographic? (.getTargetCRS t))]
     (.apply out
             (reify CoordinateFilter
               (filter [_ c]
                 (let [^Coordinate c c]
-                  (set! (.-x src) (.-x c))
-                  (set! (.-y src) (.-y c))
+                  (if swap-src
+                    (do (set! (.-x src) (.-y c))
+                        (set! (.-y src) (.-x c)))
+                    (do (set! (.-x src) (.-x c))
+                        (set! (.-y src) (.-y c))))
                   (.transform t src dst)
-                  (set! (.-x c) (.-x dst))
-                  (set! (.-y c) (.-y dst))
+                  (if swap-dst
+                    (do (set! (.-x c) (.-y dst))
+                        (set! (.-y c) (.-x dst)))
+                    (do (set! (.-x c) (.-x dst))
+                        (set! (.-y c) (.-y dst))))
                   nil))))
     (.geometryChanged out)
     (.setSRID out (int to-srid))
