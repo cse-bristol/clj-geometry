@@ -26,8 +26,8 @@
   will do well to supply the :schema argument to write.
 
   This namespace talks to SQLite directly (via the xerial sqlite-jdbc
-  driver and next.jdbc) and implements the GeoPackage spec itself,
-  rather than going through GeoTools. The geometry blob codec lives in
+  driver and next.jdbc) and implements the GeoPackage spec itself. 
+  The geometry blob codec lives in
   geometry.gpkg.geom and CRS handling in geometry.gpkg.crs.
   "
 
@@ -479,7 +479,7 @@
             (if (seq tables) ;; there are more tables, start next table
               (let [[^String table & more-tables] tables
                     {gcol :column gsrid :srid} (get geom-cols table)]
-                (when iterator (.close iterator))
+                (when iterator (.close ^java.io.Closeable iterator))
                 (let [next-state
                       (assoc state
                              :tables more-tables
@@ -488,13 +488,13 @@
                                                        to-crs geometry-factory))]
                   ;; deal with empty tables: an iterator that has nothing in
                   ;; it must be skipped so the outer iterator doesn't stop early
-                  (if (.hasNext (:iterator next-state))
+                  (if (.hasNext ^java.util.Iterator (:iterator next-state))
                     next-state
                     (maybe-advance! next-state))))
 
               ;; reached the end
               (do
-                (when iterator (.close iterator))
+                (when iterator (.close ^java.io.Closeable iterator))
                 {:tables nil :iterator nil :closed false}))))]
 
     (reify
@@ -794,7 +794,8 @@
                       spec)
         geom-idx (first (keep-indexed (fn [i k] (when (= :geom k) i)) kinds))
         n-cols (count spec)
-        iter ^java.util.Iterator (.iterator ^Iterable (or features []))]
+        ^Iterable feature-seq (or features [])
+        iter ^java.util.Iterator (.iterator feature-seq)]
     (.setAutoCommit conn false)
     (let [extent
           (with-open [ps (.prepareStatement conn insert-sql)]

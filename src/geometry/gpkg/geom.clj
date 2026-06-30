@@ -54,11 +54,11 @@
             n-env    (or (envelope-doubles env-code)
                          (throw (ex-info "Invalid envelope indicator"
                                          {:envelope-code env-code})))
-            header-len (+ 8 (* 8 n-env))
+            header-len (int (+ 8 (* 8 n-env)))
             _        (.order bb (if little? ByteOrder/LITTLE_ENDIAN ByteOrder/BIG_ENDIAN))
             srs-id   (.getInt bb 4)
-            wkb      (Arrays/copyOfRange blob header-len (alength blob))
-            geom     (.read rdr wkb)]
+            ^bytes wkb (Arrays/copyOfRange blob header-len (alength blob))
+            ^Geometry geom (.read rdr wkb)]
         (.setSRID geom srs-id)
         geom))))
 

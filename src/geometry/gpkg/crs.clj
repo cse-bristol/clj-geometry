@@ -1,6 +1,6 @@
 (ns geometry.gpkg.crs
   "CRS lookup and reprojection backed by proj4j (with the proj4j-epsg
-   dataset), replacing the GeoTools referencing module."
+   dataset)."
   (:import [org.locationtech.proj4j
             CRSFactory CoordinateReferenceSystem
             CoordinateTransformFactory CoordinateTransform ProjCoordinate]
@@ -23,7 +23,7 @@
    GDAL/QGIS actually use); `definition` carries the proj4 parameter
    string from the bundled EPSG dataset, or \"undefined\" if unknown."
   [srid]
-  (if-let [crs (lookup srid)]
+  (if-let [^CoordinateReferenceSystem crs (lookup srid)]
     {:srs_name (.getName crs)
      :organization "EPSG"
      :organization_coordsys_id srid
