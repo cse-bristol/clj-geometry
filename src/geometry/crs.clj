@@ -1,4 +1,4 @@
-(ns geometry.gpkg.crs
+(ns geometry.crs
   "CRS lookup and reprojection backed by proj4j (with the proj4j-epsg
    dataset)."
   (:import [org.locationtech.proj4j

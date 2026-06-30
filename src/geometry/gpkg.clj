@@ -36,10 +36,9 @@
             [clojure.set :as set]
             [geometry.core :as g]
             [geometry.feature :as f]
-            [geometry.gpkg.geom :as geom]
-            [geometry.gpkg.crs :as crs]
-            [next.jdbc :as jdbc]
-            [taoensso.timbre :as log])
+            [geometry.gpkg.encode :as geom]
+            [geometry.crs :as crs]
+            [next.jdbc :as jdbc])
   (:import [org.locationtech.jts.geom Geometry Envelope GeometryFactory]
            [org.locationtech.jts.io WKBReader]
            [java.lang.reflect Method]
@@ -76,7 +75,7 @@
 ;; The rtree spatial-index triggers (see `rtree-trigger-sqls`) call
 ;; ST_MinX/ST_MaxX/ST_MinY/ST_MaxY/ST_IsEmpty on geometry blobs. We
 ;; register Clojure implementations on the connection so the triggers
-;; maintain the index without GeoTools. org.sqlite.Function's value_blob
+;; maintain the index. org.sqlite.Function's value_blob
 ;; / result methods are protected, so we call them by reflection.
 
 (defn- ^Method declared-method [^String name & param-types]

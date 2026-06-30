@@ -1,4 +1,4 @@
-(ns geometry.gpkg.geom
+(ns geometry.gpkg.encode
   "Codec for the GeoPackage geometry blob format (the \"GP\" binary
    envelope around standard WKB).
 

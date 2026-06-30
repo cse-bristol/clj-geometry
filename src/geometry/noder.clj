@@ -1,7 +1,6 @@
 (ns geometry.noder
   (:require [geometry.core :as g]
-            [geometry.index :as i]
-            [taoensso.timbre :as log])
+            [geometry.index :as i])
   (:import
    [org.locationtech.jts.geom Coordinate]
    [org.locationtech.jts.noding.snapround SnapRoundingNoder]

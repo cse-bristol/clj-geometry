@@ -1,5 +1,5 @@
-(ns geometry.gpkg.geom-test
-  (:require [geometry.gpkg.geom :as geom]
+(ns geometry.gpkg.encode-test
+  (:require [geometry.gpkg.encode :as geom]
             [geometry.core :as g]
             [clojure.test :as t])
   (:import [org.locationtech.jts.geom Geometry GeometryFactory]
