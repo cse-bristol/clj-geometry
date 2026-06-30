@@ -1,9 +1,11 @@
 (ns geometry.gpkg-test
   (:require [geometry.gpkg :as sut]
+            [geometry.gpkg.geom]
             [clojure.test :as t]
             [clojure.java.io :as io]
             [geometry.core :as g]
-            [geometry.feature :as f])
+            [geometry.feature :as f]
+            [next.jdbc :as jdbc])
   (:import [clojure.lang IReduceInit]))
 
 (defmacro with-temp-file [file & body]
@@ -598,6 +600,155 @@
           {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 99 99) "id" nil "b" "NEW" "c" false}
 
           ])
+
+        (with-open [in (sut/open f :table-name "test-table")]
+          (group-by #(get % "id")
+                    (map #(into {} %) (sut/features in))))))))
+
+(defn- query [f sql]
+  (with-open [conn (jdbc/get-connection
+                    (jdbc/get-datasource (str "jdbc:sqlite:" (.getCanonicalPath f))))]
+    (jdbc/execute! conn [sql])))
+
+(t/deftest test-gpkg-headers
+  (with-temp-file f
+    (sut/write
+     f "test-table"
+     [{"geometry" (g/make-point 1 2) "id" 1}]
+     :schema {"geometry" {:type :point :srid 27700} "id" {:type :integer}})
+
+    (t/testing "application_id and user_version identify the file as a GeoPackage"
+      ;; 1196444487 = 0x47504B47 = \"GPKG\"; 10200 = GeoPackage 1.2
+      (t/is (= 1196444487 (:application_id (first (query f "PRAGMA application_id")))))
+      (t/is (= 10200 (:user_version (first (query f "PRAGMA user_version"))))))))
+
+(t/deftest test-spatial-index-populated
+  (with-temp-file f
+    (sut/write
+     f "test-table"
+     [{"geometry" (g/make-point 10 20) "id" 1}
+      {"geometry" (g/make-point 30 40) "id" 2}
+      {"geometry" nil "id" 3}] ;; null geometry must NOT be indexed
+     :schema {"geometry" {:type :point :srid 27700} "id" {:type :integer}}
+     :add-spatial-index true)
+
+    (t/testing "the rtree extension is registered"
+      (t/is (= [{:gpkg_extensions/table_name "test-table"
+                 :gpkg_extensions/extension_name "gpkg_rtree_index"}]
+               (query f "SELECT table_name, extension_name FROM gpkg_extensions"))))
+
+    (t/testing "the rtree index is populated by the triggers, excluding null geometries"
+      (t/is (= #{[1 10.0 10.0 20.0 20.0]
+                 [2 30.0 30.0 40.0 40.0]}
+               (set (map (juxt :rtree_test-table_geometry/id
+                               :rtree_test-table_geometry/minx
+                               :rtree_test-table_geometry/maxx
+                               :rtree_test-table_geometry/miny
+                               :rtree_test-table_geometry/maxy)
+                         (query f "SELECT id, minx, maxx, miny, maxy FROM \"rtree_test-table_geometry\""))))))
+
+    (t/testing "an update to a geometry is reflected in the index by the triggers"
+      (with-open [conn (#'sut/open-sqlite f)]
+        (jdbc/execute! conn
+                       ["UPDATE \"test-table\" SET geometry = ? WHERE id = 1"
+                        (#'geometry.gpkg.geom/encode (g/make-point 100 200) 27700)]))
+      (t/is (= #{[1 100.0 100.0 200.0 200.0]
+                 [2 30.0 30.0 40.0 40.0]}
+               (set (map (juxt :rtree_test-table_geometry/id
+                               :rtree_test-table_geometry/minx
+                               :rtree_test-table_geometry/maxx
+                               :rtree_test-table_geometry/miny
+                               :rtree_test-table_geometry/maxy)
+                         (query f "SELECT id, minx, maxx, miny, maxy FROM \"rtree_test-table_geometry\""))))))))
+
+(t/deftest test-drop-table-cleanup
+  (with-temp-file f
+    (sut/write
+     f "test-table"
+     [{"geometry" (g/make-point 1 2) "id" 1}]
+     :schema {"geometry" {:type :point :srid 27700} "id" {:type :integer}}
+     :add-spatial-index true)
+
+    ;; sanity: everything is present before the drop
+    (t/is (contains? (sut/table-names f) "test-table"))
+    (t/is (seq (query f "SELECT name FROM sqlite_master WHERE name = 'rtree_test-table_geometry'")))
+
+    (sut/drop-table f "test-table")
+
+    (t/testing "the table itself and its rtree virtual table are gone"
+      (t/is (not (contains? (sut/table-names f) "test-table")))
+      (t/is (empty? (query f "SELECT name FROM sqlite_master WHERE name = 'rtree_test-table_geometry'"))))
+
+    (t/testing "the rtree triggers are gone"
+      (t/is (empty? (query f "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'rtree_test-table_geometry%'"))))
+
+    (t/testing "GeoPackage metadata rows are cleaned up"
+      (t/is (empty? (query f "SELECT table_name FROM gpkg_contents WHERE table_name = 'test-table'")))
+      (t/is (empty? (query f "SELECT table_name FROM gpkg_geometry_columns WHERE table_name = 'test-table'")))
+      (t/is (empty? (query f "SELECT table_name FROM gpkg_extensions WHERE table_name = 'test-table'"))))))
+
+(t/deftest test-amend-right-join
+  (with-temp-file f
+    ;; write some features down
+    (sut/write
+     f
+     "test-table"
+
+     [{"geometry" (g/make-point 1 2) "id" 1 "b" "abc" :c true} ;; matched, gets duplicated
+      {"geometry" (g/make-point 1 3) "id" 2 "b" "abc" :c true} ;; matched, gets changed
+      {"geometry" (g/make-point 1 4) "id" 3 "b" "qwe" :c true} ;; unmatched -> deleted by right-join
+      ]
+
+     :schema
+     {"geometry" {:type :point :srid 27700}
+      "id"       {:type :integer}
+      "b"        {:type :string}
+      "c"        {:type :boolean :accessor :c}})
+
+    (sut/amend
+     f "test-table"
+     (with-open [in (sut/open f :table-name "test-table" :rowids? true)]
+       (concat
+        ;; a brand new row, unmatched in the target -> inserted
+        [(f/map->Feature
+          {:geometry (g/make-point 99 99)
+           :srid 27700
+           "b" "NEW"
+           "c" false})]
+        (mapcat
+         (fn [feature]
+           (case (get feature "id")
+             1 [(-> feature
+                    (g/update-geometry (g/make-point 3 3))
+                    (update "b" #(str "ONE " (.toUpperCase %)))
+                    (update "c" not))
+                (-> feature
+                    (g/update-geometry (g/make-point 4 4))
+                    (update "b" #(str "TWO " (.toUpperCase %)))
+                    (update "c" not))]
+
+             2 [(assoc feature "b" "ONLY")]
+
+             [] ;; id 3 omitted: unmatched in update -> deleted
+             ))
+         (sut/features in))))
+     :if-exists :preserve
+     :method :right-join
+     :schema
+     {"geometry" {:type :point :srid 27700 :accessor g/geometry}
+      "b"        {:type :string}
+      "c"        {:type :boolean}})
+
+    ;; read back and check: id 3 is gone, the new row is present
+    (t/is
+     (= (group-by
+         #(get % "id")
+         [{:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 3 3) "id" 1 "b" "ONE ABC" "c" false}
+          {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 4 4) "id" 1 "b" "TWO ABC" "c" false}
+
+          {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 1 3) "id" 2 "b" "ONLY" "c" true}
+
+          {:crs "EPSG:27700" :table "test-table" :geometry (g/make-point 99 99) "id" nil "b" "NEW" "c" false}])
 
         (with-open [in (sut/open f :table-name "test-table")]
           (group-by #(get % "id")

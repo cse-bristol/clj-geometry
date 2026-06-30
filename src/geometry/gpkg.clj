@@ -225,6 +225,7 @@
   [^java.sql.Connection conn]
   (jdbc/with-transaction [tx conn]
     (.execute (.createStatement conn) "PRAGMA application_id = 1196444487")
+    (.execute (.createStatement conn) "PRAGMA user_version = 10200")
     (doseq [ddl gpkg-metadata-ddl]
       (jdbc/execute! tx [ddl]))
     (jdbc/execute!
