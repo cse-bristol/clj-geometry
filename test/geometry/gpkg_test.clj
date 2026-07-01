@@ -754,6 +754,79 @@
           (group-by #(get % "id")
                     (map #(into {} %) (sut/features in))))))))
 
+(t/deftest test-schema-extension
+  (t/testing "column metadata and constraints round-trip via gpkg_schema"
+    (with-temp-file f
+      (sut/write
+       f "test-table"
+       [{"geometry" (g/make-point 1 2) "id" 1 "pop" 10 "colour" "red"}
+        {"geometry" (g/make-point 4 5) "id" 2 "pop" 20 "colour" "green"}]
+       :schema
+       {"geometry" {:type :point :srid 27700}
+        "id" {:type :integer}
+        "pop" {:type :integer
+               :title "Population"
+               :description "resident count"
+               :constraint "pop_range"}
+        "colour" {:type :string
+                  :name "colour_alias"
+                  :mime-type "text/plain"
+                  :constraint "colours"}}
+       :constraints
+       [{:name "pop_range" :type :range :min 0 :max 100
+         :min-inclusive? true :max-inclusive? false :description "0..100"}
+        {:name "colours" :type :enum :values ["red" "green" "blue"]}])
+
+      (t/testing "gpkg_extensions declares gpkg_schema"
+        (let [exts (set (map :extension-name (sut/extensions f)))]
+          (t/is (contains? exts "gpkg_schema"))))
+
+      (t/testing "column-metadata reads back per-column details"
+        (t/is (= {"pop" {:title "Population"
+                         :description "resident count"
+                         :constraint "pop_range"}
+                  "colour" {:name "colour_alias"
+                            :mime-type "text/plain"
+                            :constraint "colours"}}
+                 (sut/column-metadata f "test-table"))))
+
+      (t/testing "column-constraints reads back constraint definitions"
+        (let [cs (sut/column-constraints f)]
+          (t/testing "enum expands to one row per value"
+            (t/is (= [{:type :enum :value "red"}
+                      {:type :enum :value "green"}
+                      {:type :enum :value "blue"}]
+                     (get cs "colours"))))
+          (t/testing "range carries bounds and inclusivity"
+            (let [r (first (get cs "pop_range"))]
+              (t/is (= 1 (count (get cs "pop_range"))))
+              (t/is (= :range (:type r)))
+              (t/is (== 0 (:min r)))
+              (t/is (== 100 (:max r)))
+              (t/is (true? (:min-inclusive? r)))
+              (t/is (false? (:max-inclusive? r)))
+              (t/is (= "0..100" (:description r)))))))
+
+      (t/testing "the data is still readable"
+        (with-open [in (sut/open f :table-name "test-table")]
+          (t/is (= #{1 2}
+                   (set (map #(get % "id") (sut/features in))))))))))
+
+(t/deftest test-no-schema-extension
+  (t/testing "a file written without schema info opens and reports no metadata"
+    (with-temp-file f
+      (sut/write
+       f "test-table"
+       [{"geometry" (g/make-point 1 2) "id" 1}]
+       :schema {"geometry" {:type :point :srid 27700}
+                "id" {:type :integer}})
+      (t/is (= {} (sut/column-metadata f "test-table")))
+      (t/is (= {} (sut/column-constraints f)))
+      (t/is (not (contains? (set (map :extension-name (sut/extensions f)))
+                            "gpkg_schema")))
+      (with-open [in (sut/open f :table-name "test-table")]
+        (t/is (= [1] (map #(get % "id") (sut/features in))))))))
+
 (comment
   (with-open [gpkg (sut/open "/tmp/hnzp-1966294190446547555/Data/oproad_gb.gpkg" :table-name "road_link")
               f (io/writer "/tmp/hnzp-1966294190446547555/test.txt")]

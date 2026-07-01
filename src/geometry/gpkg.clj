@@ -244,6 +244,68 @@
     (ensure-srs! tx 4326)))
 
 ;; ---------------------------------------------------------------------------
+;; Extension registration
+
+(defn- register-extension!
+  "Insert a row into gpkg_extensions describing an extension in use.
+
+   `table` and `column` may be nil (for extensions that apply to the
+   whole geopackage). The spec's UNIQUE (table_name, column_name,
+   extension_name) constraint does not dedupe rows where column_name (or
+   table_name) is NULL, because SQLite treats NULLs as distinct, so
+   INSERT OR IGNORE would insert duplicates. We guard with NOT EXISTS
+   using IS to compare possibly-null identifiers."
+  [tx table column extension-name definition scope]
+  (jdbc/execute!
+   tx
+   ["INSERT INTO gpkg_extensions
+      (table_name, column_name, extension_name, definition, scope)
+      SELECT ?,?,?,?,?
+      WHERE NOT EXISTS (SELECT 1 FROM gpkg_extensions
+                        WHERE table_name IS ? AND column_name IS ? AND extension_name = ?)"
+    table column extension-name definition scope
+    table column extension-name]))
+
+;; ---------------------------------------------------------------------------
+;; Schema extension (gpkg_schema)
+
+(def ^:private gpkg-schema-ddl
+  ["CREATE TABLE IF NOT EXISTS gpkg_data_columns (
+      table_name TEXT NOT NULL,
+      column_name TEXT NOT NULL,
+      name TEXT,
+      title TEXT,
+      description TEXT,
+      mime_type TEXT,
+      constraint_name TEXT,
+      CONSTRAINT pk_gdc PRIMARY KEY (table_name, column_name),
+      CONSTRAINT gdc_tn UNIQUE (table_name, name))"
+   "CREATE TABLE IF NOT EXISTS gpkg_data_column_constraints (
+      constraint_name TEXT NOT NULL,
+      constraint_type TEXT NOT NULL,
+      value TEXT,
+      min NUMERIC,
+      min_is_inclusive BOOLEAN,
+      max NUMERIC,
+      max_is_inclusive BOOLEAN,
+      description TEXT,
+      CONSTRAINT gdcc_ntv UNIQUE (constraint_name, constraint_type, value))"])
+
+(def ^:private schema-extension-definition
+  "http://www.geopackage.org/spec/#extension_schema")
+
+(defn- bootstrap-schema!
+  "Create the gpkg_schema extension tables (if absent) and register them
+   in gpkg_extensions."
+  [tx]
+  (doseq [ddl gpkg-schema-ddl]
+    (jdbc/execute! tx [ddl]))
+  (register-extension! tx "gpkg_data_columns" nil "gpkg_schema"
+                       schema-extension-definition "read-write")
+  (register-extension! tx "gpkg_data_column_constraints" nil "gpkg_schema"
+                       schema-extension-definition "read-write"))
+
+;; ---------------------------------------------------------------------------
 ;; Metadata queries
 
 (defn table-names
@@ -330,6 +392,84 @@
   (cond (integer? x) x
         (string? x) (Integer/parseInt (last (string/split x #":")))
         :else (throw (IllegalArgumentException. (str "Unknown type of CRS " x)))))
+
+;; ---------------------------------------------------------------------------
+;; Extension queries
+
+(defn- sqlite-bool
+  "Coerce a SQLite BOOLEAN column value (0/1, or an actual boolean, or
+   nil) into a Clojure boolean or nil."
+  [v]
+  (cond (nil? v) nil
+        (number? v) (not (zero? v))
+        :else (boolean v)))
+
+(defn- strip-nils [m] (into {} (remove (comp nil? val)) m))
+
+(defn extensions
+  "The rows of gpkg_extensions in `file`, describing the GeoPackage
+   extensions it declares. Each row is a map with :table-name,
+   :column-name, :extension-name, :definition and :scope. Empty if the
+   file has no gpkg_extensions table (plain sqlite, or a geopackage that
+   declares no extensions)."
+  [file]
+  (->> (try (sqlite-query!
+             file ["SELECT table_name, column_name, extension_name, definition, scope
+                    FROM gpkg_extensions"])
+            (catch Exception _ nil))
+       (mapv (fn [r]
+               (let [r (update-keys r (comp keyword name))]
+                 {:table-name (:table_name r)
+                  :column-name (:column_name r)
+                  :extension-name (:extension_name r)
+                  :definition (:definition r)
+                  :scope (:scope r)})))))
+
+(defn column-metadata
+  "The gpkg_schema (gpkg_data_columns) metadata for `table`, as a map of
+   column-name -> {:name :title :description :mime-type :constraint}
+   (keys with nil values omitted). Empty if the file does not use the
+   schema extension."
+  [file table]
+  (->> (try (sqlite-query!
+             file ["SELECT column_name, name, title, description, mime_type, constraint_name
+                    FROM gpkg_data_columns WHERE table_name = ?" table])
+            (catch Exception _ nil))
+       (reduce
+        (fn [acc r]
+          (let [r (update-keys r (comp keyword name))]
+            (assoc acc (:column_name r)
+                   (strip-nils {:name (:name r)
+                                :title (:title r)
+                                :description (:description r)
+                                :mime-type (:mime_type r)
+                                :constraint (:constraint_name r)}))))
+        {})))
+
+(defn column-constraints
+  "The gpkg_schema (gpkg_data_column_constraints) definitions in `file`,
+   as a map of constraint-name -> vector of rows. Each row is a map with
+   :type and the relevant of :value / :min / :min-inclusive? / :max /
+   :max-inclusive? / :description. Empty if the extension is unused."
+  [file]
+  (->> (try (sqlite-query!
+             file ["SELECT constraint_name, constraint_type, value, min, min_is_inclusive,
+                    max, max_is_inclusive, description FROM gpkg_data_column_constraints"])
+            (catch Exception _ nil))
+       (map (fn [r]
+              (let [r (update-keys r (comp keyword name))]
+                {:constraint-name (:constraint_name r)
+                 :row (strip-nils
+                       {:type (keyword (:constraint_type r))
+                        :value (:value r)
+                        :min (:min r)
+                        :min-inclusive? (sqlite-bool (:min_is_inclusive r))
+                        :max (:max r)
+                        :max-inclusive? (sqlite-bool (:max_is_inclusive r))
+                        :description (:description r)})})))
+       (reduce (fn [acc {:keys [constraint-name row]}]
+                 (update acc constraint-name (fnil conj []) row))
+               {})))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading
@@ -722,12 +862,8 @@
     (jdbc/execute!
      tx [(format "CREATE VIRTUAL TABLE IF NOT EXISTS %s USING rtree(\"id\", \"minx\", \"maxx\", \"miny\", \"maxy\")"
                  (escape-identifier rtree))])
-    (jdbc/execute!
-     tx ["INSERT OR IGNORE INTO gpkg_extensions
-           (table_name, column_name, extension_name, definition, scope)
-           VALUES (?,?,?,?,?)"
-         table geom-col "gpkg_rtree_index"
-         "http://www.geopackage.org/spec120/#extension_rtree" "write-only"])
+    (register-extension! tx table geom-col "gpkg_rtree_index"
+                         "http://www.geopackage.org/spec120/#extension_rtree" "write-only")
     (doseq [s (rtree-trigger-sqls table geom-col rtree pk)]
       (jdbc/execute! tx [s]))))
 
@@ -825,6 +961,51 @@
       (.setAutoCommit conn true)
       extent)))
 
+(defn- column-schema-fields
+  "The gpkg_schema (gpkg_data_columns) metadata carried by a column's
+   spec detail map, or nil if it carries none."
+  [details]
+  (let [m (select-keys details [:name :title :description :mime-type :constraint])]
+    (when (seq m) m)))
+
+(defn- constraint->rows
+  "Expand a gpkg_data_column_constraints definition map into rows (each a
+   vector of the eight column values, in DDL order). An :enum with
+   `:values` produces one row per value; :range and :glob produce one row."
+  [{cname :name ctype :type
+    :keys [value values min max min-inclusive? max-inclusive? description]}]
+  (let [type-name (name ctype)]
+    (case ctype
+      :enum (for [v values] [cname type-name (str v) nil nil nil nil description])
+      :range [[cname type-name nil
+               min (when (some? min) (if min-inclusive? 1 0))
+               max (when (some? max) (if max-inclusive? 1 0))
+               description]]
+      :glob [[cname type-name value nil nil nil nil description]])))
+
+(defn- write-schema-metadata!
+  "Write gpkg_schema rows for `table` on `tx`: the per-column metadata in
+   `column-schemas` (a seq of [column-name details-map]) and the
+   `constraints` definitions. Bootstraps the extension tables first."
+  [tx table column-schemas constraints]
+  (bootstrap-schema! tx)
+  (doseq [c constraints
+          row (constraint->rows c)]
+    (jdbc/execute!
+     tx
+     (into ["INSERT OR REPLACE INTO gpkg_data_column_constraints
+              (constraint_name, constraint_type, value, min, min_is_inclusive,
+               max, max_is_inclusive, description)
+              VALUES (?,?,?,?,?,?,?,?)"]
+           row)))
+  (doseq [[col m] column-schemas]
+    (jdbc/execute!
+     tx
+     ["INSERT OR REPLACE INTO gpkg_data_columns
+        (table_name, column_name, name, title, description, mime_type, constraint_name)
+        VALUES (?,?,?,?,?,?,?)"
+      table col (:name m) (:title m) (:description m) (:mime-type m) (:constraint m)])))
+
 (defn write
   "Write the given sequence of `features` into a geopackage at `file`
   in a table called `table-name`
@@ -871,10 +1052,24 @@
 
   `:add-spatial-index` will ensure a spatial index exists, if it is a
   spatial table. If non spatial, no effect.
+
+  Column metadata for the gpkg_schema extension can be supplied inline in
+  the schema. Any column detail map may carry :name (an alternate
+  identifier), :title, :description, :mime-type and :constraint (the name
+  of a constraint). Constraints themselves are supplied with the
+  `:constraints` option, a seq of definition maps like
+
+  {:name \"pos\" :type :range :min 0 :max 100
+   :min-inclusive? true :max-inclusive? false :description \"...\"}
+  {:name \"colours\" :type :enum :values [\"red\" \"green\"]}
+  {:name \"code\" :type :glob :value \"[0-9]*\"}
+
+  Supplying either registers the gpkg_schema extension and writes the
+  gpkg_data_columns / gpkg_data_column_constraints tables.
   "
   ([file table-name ^Iterable features & {:keys [schema batch-insert-size
                                                  add-spatial-index
-                                                 if-exists]
+                                                 if-exists constraints]
                                           :or {batch-insert-size 4000
                                                if-exists :append}}]
    {:pre [(or (instance? Iterable features) (nil? features))
@@ -894,6 +1089,11 @@
          (catch Exception _))))
 
    (let [spec (vec (or schema (infer-spec (first features))))
+         column-schemas (for [[col details] spec
+                              :let [m (column-schema-fields details)]
+                              :when m]
+                          [(name col) m])
+         has-schema? (or (seq column-schemas) (seq constraints))
          [geom-field {:keys [srid type] :or {srid 27700}}] (spec-geom-field spec)
          geom-col (when geom-field (name geom-field))
          geom-type (when geom-field (geometry-type-names type "GEOMETRY"))
@@ -917,7 +1117,9 @@
              (jdbc/execute! tx [(:create-table ddl)])
              (register-feature-table! tx table-name geom-col geom-type srid)
              (when add-spatial-index
-               (create-spatial-index! tx table-name geom-col "fid")))
+               (create-spatial-index! tx table-name geom-col "fid"))
+             (when has-schema?
+               (write-schema-metadata! tx table-name column-schemas constraints)))
 
            (let [extent (insert-features! conn insert-sql spec features srid batch-insert-size)]
              (jdbc/with-transaction [tx conn]
@@ -931,6 +1133,8 @@
               tx
               ["INSERT INTO gpkg_contents (table_name, data_type, identifier) VALUES (?,?,?) ON CONFLICT DO NOTHING"
                table-name "attributes" table-name]))
+           (when has-schema?
+             (write-schema-metadata! tx table-name column-schemas constraints))
            (jdbc/execute-batch!
             tx
             (:insert ddl)
