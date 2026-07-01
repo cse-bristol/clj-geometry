@@ -36,7 +36,7 @@
             [clojure.set :as set]
             [geometry.core :as g]
             [geometry.feature :as f]
-            [geometry.gpkg.encode :as geom]
+            [geometry.gpkg.encode :as encode]
             [geometry.crs :as crs]
             [next.jdbc :as jdbc])
   (:import [org.locationtech.jts.geom Geometry Envelope GeometryFactory]
@@ -87,44 +87,44 @@
 (def ^:private ^Method m-result-int    (declared-method "result" Integer/TYPE))
 (def ^:private ^Method m-result-null   (declared-method "result"))
 
-(def ^:private ^WKBReader st-reader
-  "WKBReader for the ST_* functions; only used to recover envelopes, so
-   the default factory is fine. SQLite invokes functions single-threaded
-   on the connection, so sharing one reader is safe."
-  (geom/reader g/*factory*))
-
 (defn- envelope-function
   "A scalar SQL Function returning (f envelope) as a double, where the
-   first argument is a GeoPackage geometry blob."
-  [f]
+   first argument is a GeoPackage geometry blob. Decodes with `rdr`, a
+   WKBReader private to the owning connection (WKBReader is stateful and
+   not thread-safe, so it must not be shared across connections)."
+  [^WKBReader rdr f]
   (proxy [Function] []
     (xFunc []
       (let [blob (.invoke m-value-blob this (object-array [(int 0)]))]
         (if (nil? blob)
           (.invoke m-result-null this (object-array 0))
-          (let [^Geometry gm (geom/decode blob st-reader)
+          (let [^Geometry gm (encode/decode blob rdr)
                 e (.getEnvelopeInternal gm)]
             (.invoke m-result-double this (object-array [(double (f e))]))))))))
 
-(defn- is-empty-function []
+(defn- is-empty-function [^WKBReader rdr]
   (proxy [Function] []
     (xFunc []
       (let [blob (.invoke m-value-blob this (object-array [(int 0)]))]
         (if (nil? blob)
           (.invoke m-result-int this (object-array [(int 1)]))
-          (let [^Geometry gm (geom/decode blob st-reader)]
+          (let [^Geometry gm (encode/decode blob rdr)]
             (.invoke m-result-int this
                      (object-array [(int (if (.isEmpty gm) 1 0))]))))))))
 
 (defn- register-gpkg-functions!
   "Register the GeoPackage ST_* helper functions on `conn` so rtree
-   triggers work."
+   triggers work. Each connection gets its own WKBReader: SQLite invokes
+   these functions single-threaded per connection, but a WKBReader is
+   stateful, so sharing one across concurrently-writing connections
+   corrupts decodes."
   [^java.sql.Connection conn]
-  (Function/create conn "ST_MinX" (envelope-function (fn [^Envelope e] (.getMinX e))))
-  (Function/create conn "ST_MaxX" (envelope-function (fn [^Envelope e] (.getMaxX e))))
-  (Function/create conn "ST_MinY" (envelope-function (fn [^Envelope e] (.getMinY e))))
-  (Function/create conn "ST_MaxY" (envelope-function (fn [^Envelope e] (.getMaxY e))))
-  (Function/create conn "ST_IsEmpty" (is-empty-function)))
+  (let [rdr (encode/reader g/*factory*)]
+    (Function/create conn "ST_MinX" (envelope-function rdr (fn [^Envelope e] (.getMinX e))))
+    (Function/create conn "ST_MaxX" (envelope-function rdr (fn [^Envelope e] (.getMaxX e))))
+    (Function/create conn "ST_MinY" (envelope-function rdr (fn [^Envelope e] (.getMinY e))))
+    (Function/create conn "ST_MaxY" (envelope-function rdr (fn [^Envelope e] (.getMaxY e))))
+    (Function/create conn "ST_IsEmpty" (is-empty-function rdr))))
 
 ;; ---------------------------------------------------------------------------
 ;; Connections
@@ -343,7 +343,7 @@
 
    Internal implementation detail of gpkg/open."
   [file table geom-col srid key-transform fetch-rowid to-crs ^GeometryFactory factory]
-  (let [rdr       (geom/reader factory)
+  (let [rdr       (encode/reader factory)
         to-srid   (when to-crs (->srid to-crs))
         transform (when (and to-srid srid) (crs/transform srid to-srid))
         eff-srid  (or to-srid srid)
@@ -371,7 +371,7 @@
                      (cond
                        geometry?
                        (fn [v] (when v
-                                 (let [gm (geom/decode v rdr)]
+                                 (let [gm (encode/decode v rdr)]
                                    (if transform
                                      (crs/reproject gm transform to-srid)
                                      gm))))
@@ -810,7 +810,7 @@
                           col (inc i)]
                       (cond
                         (nil? v) (.setObject ps col nil)
-                        (= :geom (kinds i)) (.setBytes ps col (geom/encode v srid))
+                        (= :geom (kinds i)) (.setBytes ps col (encode/encode v srid))
                         (= :bool (kinds i)) (.setInt ps col (if v 1 0))
                         :else (.setObject ps col v))))
                   (.addBatch ps)

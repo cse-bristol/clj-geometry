@@ -1,6 +1,6 @@
 (ns geometry.gpkg-test
   (:require [geometry.gpkg :as sut]
-            [geometry.gpkg.encode]
+            [geometry.gpkg.encode :as enc]
             [clojure.test :as t]
             [clojure.java.io :as io]
             [geometry.core :as g]
