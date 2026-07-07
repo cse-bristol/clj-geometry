@@ -1,7 +1,6 @@
 #+TITLE: CLJ Geometry
 
-A library wrapping JTS and some bits of geotools, for working with
-geospatial data and geometries.
+A library wrapping JTS for working with geospatial data and geometries.
 
 * Run tests
 

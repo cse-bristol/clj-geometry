@@ -1,0 +1,4 @@
+{:hooks
+ {:analyze-call
+  {geometry.gpkg-test/with-temp-file             hooks.geometry.gpkg-test/with-temp-file
+   geometry.gpkg-conformance-test/with-temp-file hooks.geometry.gpkg-test/with-temp-file}}}
