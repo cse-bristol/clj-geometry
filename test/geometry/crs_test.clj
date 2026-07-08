@@ -1,7 +1,8 @@
 (ns geometry.crs-test
   (:require [geometry.crs :as crs]
             [geometry.core :as g]
-            [clojure.test :as t])
+            [clojure.test :as t]
+            [geometry.core :as geom])
   (:import [org.locationtech.proj4j CoordinateReferenceSystem]))
 
 (t/deftest test-lookup
@@ -31,26 +32,24 @@
   (t/is (thrown? clojure.lang.ExceptionInfo (crs/transform 999999999 4326)))
   (t/is (thrown? clojure.lang.ExceptionInfo (crs/transform 4326 999999999))))
 
-;; Documents the axis convention for geographic CRS: x=latitude, y=longitude,
-;; matching the EPSG axis order used by GeoTools.
-(t/deftest test-reproject-axis-order
-  (let [pt  (g/make-point 0 1)   ; BNG easting=0 northing=1 (SW corner of grid)
-        out (crs/reproject pt (crs/transform 27700 4326) 4326)]
-    (t/testing "x is latitude (positive = north), y is longitude (negative = west)"
-      (t/is (< 49 (.getX out) 50))      ; ~49.77°N
-      (t/is (< (.getY out) 0)))))   ; ~49.77°N
-
 (t/deftest test-reproject
   ;; an Ordnance Survey test point in British National Grid (EPSG:27700)
   (let [pt (g/make-point 651409.903 313177.270)
         t  (crs/transform 27700 4326)
         out (crs/reproject pt t 4326)]
 
-    (t/testing "coordinates are reprojected to WGS84 in EPSG axis order:
-                x=latitude, y=longitude (proj4j uses a Helmert transform,
-                so allow a loose tolerance)"
-      (t/is (< (Math/abs (- 52.6576 (.getX out))) 0.01))
-      (t/is (< (Math/abs (- 1.7179 (.getY out))) 0.01)))
+    (t/testing "coordinates are reprojected to WGS84 with x=longitude, y=latitude 
+                (proj4j uses a Helmert transform, so allow a loose tolerance)"
+      (t/is (< (Math/abs (- 1.7179 (.getX out))) 0.01))
+      (t/is (< (Math/abs (- 52.6576 (.getY out))) 0.01))
+
+      (t/is (= (g/make-point 452622.19489624136 233605.77503933024)
+               (crs/reproject (g/make-point -1.234932 51.998410)
+                              (crs/transform 4326 27700) 27700)))
+      
+      (t/is (= (g/make-point -7.557160831822298 49.766816190946884)
+               (crs/reproject (g/make-point 0 1)
+                              (crs/transform 27700 4326) 4326))))
 
     (t/testing "the result SRID is set to the target"
       (t/is (= 4326 (.getSRID out))))

@@ -57,29 +57,20 @@
    `^CoordinateTransform t`. Mutates a clone, leaving `geom` untouched.
    Sets the result SRID to `to-srid`.
 
-   Coordinates follow the EPSG axis order: for geographic CRS (e.g. 4326)
-   x=latitude, y=longitude, matching the convention used by GeoTools."
+   For 4326, x=longitude, y=latitude."
   ^Geometry [^Geometry geom ^CoordinateTransform t to-srid]
   (let [out      (.copy geom)
         src      (ProjCoordinate.)
-        dst      (ProjCoordinate.)
-        swap-src (geographic? (.getSourceCRS t))
-        swap-dst (geographic? (.getTargetCRS t))]
+        dst      (ProjCoordinate.)]
     (.apply out
             (reify CoordinateFilter
               (filter [_ c]
                 (let [^Coordinate c c]
-                  (if swap-src
-                    (do (set! (.-x src) (.-y c))
-                        (set! (.-y src) (.-x c)))
-                    (do (set! (.-x src) (.-x c))
-                        (set! (.-y src) (.-y c))))
+                  (set! (.-x src) (.-x c))
+                  (set! (.-y src) (.-y c))
                   (.transform t src dst)
-                  (if swap-dst
-                    (do (set! (.-x c) (.-y dst))
-                        (set! (.-y c) (.-x dst)))
-                    (do (set! (.-x c) (.-x dst))
-                        (set! (.-y c) (.-y dst))))
+                  (set! (.-x c) (.-x dst))
+                  (set! (.-y c) (.-y dst))
                   nil))))
     (.geometryChanged out)
     (.setSRID out (int to-srid))
