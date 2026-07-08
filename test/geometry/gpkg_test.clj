@@ -60,10 +60,9 @@
     (t/testing "reading with :to-crs reprojects geometries to WGS84"
       (with-open [in (sut/open f :table-name "test-table" :to-crs 4326)]
         (let [pt (:geometry (first (sut/features in)))]
-          ;; EPSG axis order: x=latitude ~52.6576, y=longitude ~1.7179
           ;; proj4j uses a Helmert transform so allow a loose tolerance
-          (t/is (< (Math/abs (- 52.6576 (.getX pt))) 0.01))
-          (t/is (< (Math/abs (- 1.7179 (.getY pt))) 0.01))
+          (t/is (< (Math/abs (- 1.7179 (.getX pt))) 0.01))
+          (t/is (< (Math/abs (- 52.6576 (.getY pt))) 0.01))
           (t/is (= 4326 (.getSRID pt))))))
 
     (t/testing "without :to-crs the geometry is unchanged"
