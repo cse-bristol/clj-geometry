@@ -141,3 +141,29 @@
 
     (testing "Should return empty vector if query is an empty geom and a radius is given"
       (is (= [] (index/query idx (g/read-wkt "POLYGON EMPTY") 100))))))
+(deftest test-within-distance
+  (let [;; the long line's bounding box is nearer the query than the small square,
+        ;; but the line itself is further away
+        line   (g/read-wkt "LINESTRING (0 100, 100 0)")
+        square (g/read-wkt "POLYGON ((25 25, 27 25, 27 27, 25 27, 25 25))")
+        far    (g/read-wkt "POINT (500 500)")
+        idx    (index/create [line square far])
+        q      (g/read-wkt "POINT (20 20)")]
+    (is (= [square line] (index/within-distance idx q 100)))
+    (is (= [square] (index/within-distance idx q 20)))
+    (is (= [] (index/within-distance idx q 1)))
+    (is (= [] (index/within-distance idx (g/read-wkt "POINT EMPTY") 100)))
+    (testing "neighbours with n = 1 picks the line, by its bounding box"
+      (is (= [line] (index/neighbours idx q 100 1))))))
+
+(deftest test-nearest
+  (let [a   (f/map->Feature {:geometry (g/read-wkt "POINT (0 10)") :id 2})
+        b   (f/map->Feature {:geometry (g/read-wkt "POINT (10 0)") :id 1})
+        c   (f/map->Feature {:geometry (g/read-wkt "POINT (20 20)") :id 0})
+        idx (index/create [a b c])
+        q   (g/read-wkt "POINT (0 0)")]
+    (is (#{a b} (index/nearest idx q 100)))
+    (is (= b (index/nearest idx q 100 :id)) "ties go to the least key")
+    (is (nil? (index/nearest idx q 5)))
+    (is (nil? (index/nearest idx q 5 :id)))
+    (is (nil? (index/nearest idx (g/read-wkt "POINT EMPTY") 100 :id)))))

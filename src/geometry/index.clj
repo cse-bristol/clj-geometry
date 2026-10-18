@@ -121,6 +121,42 @@
              (map (fn [^Entry e] (.value e)))
              (.search index b radius))))))
 
+(defn- distances-within
+  "[distance element] for each element of the index within `range` of `q`"
+  [^RTree index q range]
+  (if (g/empty-geom? q)
+    []
+    (let [range (double range)]
+      (into []
+            (keep (fn [^Entry e]
+                    (let [d (g/distance q (.value e))]
+                      (when (<= d range) [d (.value e)]))))
+            (.search index (rtree-rectangle-bounds q) range)))))
+
+(defn within-distance
+  "Every element of the index whose geometry is within `range` of `q`, nearest first.
+
+   Unlike `neighbours`, this uses the actual distance to each element, not to its
+   bounding box, and has no limit on how many it finds."
+  [index q range]
+  (->> (distances-within index q range)
+       (sort-by first)
+       (mapv second)))
+
+(defn nearest
+  "The element of the index nearest to `q`, or nil if none is within `range`.
+
+   Unlike `neighbours` with a small `n`, this is exact. The order an index finds
+   elements in is arbitrary, so where several are equally near this takes the one
+   with the least `(tie-key element)`, if `tie-key` is given."
+  ([index q range]
+   (first (within-distance index q range)))
+  ([index q range tie-key]
+   (->> (distances-within index q range)
+        (sort-by (fn [[d x]] [d (tie-key x)]))
+        (first)
+        (second))))
+
 (defn- do-query
   "Query an rtree.
      
