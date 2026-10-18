@@ -167,3 +167,44 @@
     (is (nil? (index/nearest idx q 5)))
     (is (nil? (index/nearest idx q 5 :id)))
     (is (nil? (index/nearest idx (g/read-wkt "POINT EMPTY") 100 :id)))))
+
+(deftest test-static
+  (let [a      (g/read-wkt "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")
+        b      (g/read-wkt "POLYGON ((10 10, 20 10, 20 20, 10 20, 10 10))")
+        line   (g/read-wkt "LINESTRING (0 100, 100 0)")
+        square (g/read-wkt "POLYGON ((25 25, 27 25, 27 27, 25 27, 25 25))")
+        xs     [a b line square nil (g/read-wkt "POLYGON EMPTY")]
+        idx    (index/create-static xs)
+        norm   #(set (map g/normalize %))]
+    (testing "leaves out nil and empty geometries"
+      (is (= (norm [a b line square]) (norm (index/entries idx)))))
+    (testing "queries agree with a persistent index"
+      (let [rtree (index/create xs)]
+        (doseq [q [(g/read-wkt "POINT (5 5)") (g/read-wkt "POINT (10 10)")
+                   (g/read-wkt "POLYGON ((5 5, 30 5, 30 30, 5 30, 5 5))")]]
+          (is (= (norm (index/intersecting rtree q)) (norm (index/intersecting idx q))))
+          (is (= (norm (index/touching rtree q)) (norm (index/touching idx q))))
+          (is (= (norm (index/covered-by rtree q)) (norm (index/covered-by idx q))))
+          (is (= (norm (index/query rtree q)) (norm (index/query idx q))))
+          (is (= (norm (index/query rtree q 5.0)) (norm (index/query idx q 5.0))))
+          (is (= (index/within-distance rtree q 50) (index/within-distance idx q 50))))))
+    (testing "query with a radius measures from envelope to envelope"
+      ;; the corner of `a`'s envelope is sqrt(2) * 5 from the query's
+      (is (= [] (index/query idx (g/read-wkt "POINT (-5 -5)") 7.0)))
+      (is (= (norm [a line]) (norm (index/query idx (g/read-wkt "POINT (-5 -5)") 7.1)))))
+    (testing "neighbours are exact"
+      (is (= [square] (index/neighbours idx (g/read-wkt "POINT (24 24)") 100 1))))
+    (testing "can't be changed"
+      (is (thrown? clojure.lang.ExceptionInfo (index/add idx a)))
+      (is (thrown? clojure.lang.ExceptionInfo (index/delete idx a))))))
+
+(deftest test-static-with-geometry-fn
+  (let [things [{:id 0 :geometry (g/read-wkt "POINT (0 10)")}
+                {:id 1 :geometry (g/read-wkt "POINT (10 0)")}
+                {:id 2 :geometry (g/read-wkt "LINESTRING (20 20, 30 30)")}]
+        idx    (index/create-static (range (count things))
+                                    :geometry #(:geometry (nth things %)))]
+    (is (= #{0 1 2} (set (index/entries idx))))
+    (is (= 0 (index/nearest idx (g/read-wkt "POINT (0 0)") 100 identity)) "ties go to the least key")
+    (is (= [2] (index/intersecting idx (g/read-wkt "POLYGON ((25 0, 40 0, 40 40, 25 40, 25 0))"))))
+    (is (= [0 1] (sort (index/within-distance idx (g/read-wkt "POINT (0 0)") 10))))))
