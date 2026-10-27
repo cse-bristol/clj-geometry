@@ -201,40 +201,25 @@
         (second))))
 
 (defn neighbours
-  "Find nearest indexed feature(s) using RTree.nearest() ref
-   https://javadoc.io/static/com.github.davidmoten/rtree/0.11/com/github/davidmoten/rtree/RTree.html#nearest-com.github.davidmoten.rtree.geometry.Rectangle-double-int-
-   If more than one entry found they are sorted nearest first.
+  "The `n` indexed features nearest to `q` by actual distance, nearest first.
    `q`: query shape
-   `range`: max distance of returned entries from a rectangle around q
+   `range`: max distance of returned entries from q
    `n`: max number of entries to return
-   
-   Be careful when using an `n` of one - the indexed feature whose
-   bounding box is closest to the bounding box of the query geometry
-   is not the same as the index feature which is closest to the query
-   geometry. It's best to use a higher `n` and take the first entry
-   as entries are sorted by actual distance.
 
-   On an index from `create-static` this is exact: the `n` nearest by actual distance.
+   This looks within a small distance first and widens it until it has
+   found `n`, so it is quick when there are many features within `range`.
    "
   [index q range n]
-  (cond
-    (g/empty-geom? q)
+  (if (g/empty-geom? q)
     []
-
-    (instance? StaticIndex index)
-    (take n (within-distance index q range))
-
-    :else
-    (let [matches (into [] (.nearest ^RTree index
-                                     (rtree-rectangle-bounds q)
-                                     (double range) (int n)))]
-      (if (= n 1)
-        (let [m (first matches)]
-          (and m [(.value ^Entry m)]))
-
-        (->> matches
-             (sort-by (fn [^Entry x] (g/distance q (.value x))))
-             (map (fn [^Entry e] (.value e))))))))
+    (let [range (double range)]
+      ;; anything within r of q has its envelope within r of q, so if
+      ;; we have n within r, they are the n nearest
+      (loop [r (min range 16.0)]
+        (let [found (sort-by first (distances-within index q r))]
+          (if (or (>= r range) (>= (count found) n))
+            (map second (take n found))
+            (recur (min range (* r 4.0)))))))))
 
 (defn- do-query
   "Query an index.

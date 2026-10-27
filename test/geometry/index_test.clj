@@ -153,8 +153,8 @@
     (is (= [square] (index/within-distance idx q 20)))
     (is (= [] (index/within-distance idx q 1)))
     (is (= [] (index/within-distance idx (g/read-wkt "POINT EMPTY") 100)))
-    (testing "neighbours with n = 1 picks the line, by its bounding box"
-      (is (= [line] (index/neighbours idx q 100 1))))))
+    (testing "neighbours are exact, though the line's bounding box is nearer"
+      (is (= [square] (index/neighbours idx q 100 1))))))
 
 (deftest test-nearest
   (let [a   (f/map->Feature {:geometry (g/read-wkt "POINT (0 10)") :id 2})

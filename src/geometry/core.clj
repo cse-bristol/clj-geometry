@@ -177,7 +177,10 @@
 
 (defn make-coordinates ^"[Lorg.locationtech.jts.geom.Coordinate;"
   [xs]
+  ;; satisfies? is slow when it's false, so we look for sequences of points before using it
   (cond
+    (instance? Geometry xs) (.getCoordinates ^Geometry xs)
+    (sequential? xs) (into-array Coordinate (map make-coordinate xs))
     (satisfies? HasGeometry xs) (.getCoordinates (geometry xs))
     (seqable? xs) (into-array Coordinate (map make-coordinate xs))
 
@@ -189,7 +192,7 @@
   ([x y] (.createPoint ^GeometryFactory *factory* ^Coordinate (make-coordinate x y))))
 
 (defn make-line-string [xys]
-  (if (line-string? xys)
+  (if (and (not (sequential? xys)) (line-string? xys))
     xys (.createLineString ^GeometryFactory *factory* (make-coordinates xys))))
 
 (defn make-linear-ring [xys]
